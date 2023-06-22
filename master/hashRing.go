@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"sort"
@@ -33,7 +34,7 @@ func (hr *HashRing) AddNode(node string) {
 	})
 }
 
-func (hr *HashRing) GetNode(key string) string {
+func (hr *HashRing) GetNode(key string) (string, error) {
 	hash := crc32.ChecksumIEEE([]byte(key))
 	index := sort.Search(len(hr.sortedHash), func(i int) bool {
 		return hr.sortedHash[i] >= hash
@@ -41,5 +42,12 @@ func (hr *HashRing) GetNode(key string) string {
 	if index == len(hr.sortedHash) {
 		index = 0
 	}
-	return hr.hashmap[hr.sortedHash[index]]
+
+	fmt.Println(hash, index, hr.sortedHash[index], hr.hashmap)
+
+	if _, ok := hr.hashmap[hr.sortedHash[index]]; ok {
+		return hr.hashmap[hr.sortedHash[index]], nil
+	} else {
+		return "", errors.New("node not found for the key")
+	}
 }
