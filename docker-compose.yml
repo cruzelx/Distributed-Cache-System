@@ -1,0 +1,45 @@
+version: "3"
+
+services:
+  master: 
+    build: 
+      context: "./master"
+    ports:
+      - 8000:8000
+    environment:
+      - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
+    volumes:
+      - ./master:/app
+  
+
+  aux1:
+    build:
+      context: "./auxiliary"
+    environment:
+      - PORT=3001
+    ports:
+      - 9001:3001
+    volumes:
+      - ./auxiliary:/app
+ 
+
+  aux2:
+    build:
+      context: "./auxiliary"
+    environment:
+      - PORT=3002
+    ports:
+      - 9002:3002
+    volumes:
+      - ./auxiliary:/app
+
+
+  aux3:
+    build:
+      context: "./auxiliary"
+    environment:
+      - PORT=3003
+    ports:
+      - 9003:3003
+    volumes:
+      - ./auxiliary:/app
