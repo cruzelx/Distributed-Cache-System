@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 )
 
@@ -16,22 +18,26 @@ func Start() {
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
-	hr := NewHashRing(3)
-	hr.AddNode("192.168.0.1:8081")
-	hr.AddNode("192.168.0.2:8081")
-	hr.AddNode("192.168.0.3:8081")
+	value := os.Getenv("AUX_SERVERS")
+	aux_servers := strings.Split(value, ",")
 
+	hr := NewHashRing(3)
+	for _, aux_server := range aux_servers {
+		hr.AddNode(aux_server)
+	}
 	m := Master{hashring: hr}
 
 	r.HandleFunc("/data", m.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
 
+	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
+
 	srv := http.Server{
-		Addr:         ":8080",
+		Addr:         ":8000",
 		WriteTimeout: time.Second * 15,
 		ReadTimeout:  time.Second * 15,
 		IdleTimeout:  time.Second * 60,
-		Handler:      r,
+		Handler:      loggedHandler,
 	}
 
 	errChan := make(chan error)
@@ -43,7 +49,7 @@ func Start() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 
-	log.Println("Server is listening on the port 8080")
+	log.Println("Server is listening on the port 8000")
 
 	select {
 	case err := <-errChan:
