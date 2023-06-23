@@ -32,21 +32,15 @@ func (aux *Auxiliary) Put(w http.ResponseWriter, r *http.Request) {
 
 func (aux *Auxiliary) Get(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	key, ok := vars["key"]
-
-	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	key := vars["key"]
 
 	val, err := aux.LRU.Get(key)
 
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(val))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(KeyVal{Key: key, Value: val})
 
 }
