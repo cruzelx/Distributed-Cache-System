@@ -43,8 +43,6 @@ func (hr *HashRing) GetNode(key string) (string, error) {
 		index = 0
 	}
 
-	fmt.Println(hash, index, hr.sortedHash[index], hr.hashmap)
-
 	if _, ok := hr.hashmap[hr.sortedHash[index]]; ok {
 		return hr.hashmap[hr.sortedHash[index]], nil
 	} else {
