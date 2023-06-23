@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 )
 
@@ -24,12 +25,16 @@ func Start() {
 	r.HandleFunc("/data", aux.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", aux.Get).Methods("GET")
 
+	port := os.Getenv("PORT")
+
+	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
+
 	srv := http.Server{
-		Addr:         ":8081",
+		Addr:         fmt.Sprintf(":%s", port),
 		WriteTimeout: time.Second * 15,
 		ReadTimeout:  time.Second * 15,
 		IdleTimeout:  time.Second * 60,
-		Handler:      r,
+		Handler:      loggedHandler,
 	}
 
 	errChan := make(chan error)
@@ -41,7 +46,7 @@ func Start() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 
-	log.Println("Aux is listening on the port 8081")
+	log.Println("Aux is listening on the port ", port)
 
 	select {
 	case err := <-errChan:
