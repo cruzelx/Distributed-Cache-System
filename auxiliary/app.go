@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -14,21 +15,34 @@ import (
 )
 
 func Start() {
-	r := mux.NewRouter()
-	r.Use(mux.CORSMethodMiddleware(r))
 
-	lru := NewLRU(3)
+	// path of the file that stores the cache for persistence
+	serverId := os.Getenv("ID")
+	filepath := "/data/" + serverId + "-" + "data.dat"
+
+	// Init LRU cache with 3 replica set and the location of cache file
+	lru := NewLRU(3, filepath)
+
+	// Check if the cache file already exists and load the data in LRU cache
+	if ok, err := lru.loadFromDisk(); !ok {
+		fmt.Println("Error loading from disk:  ", err)
+	} else {
+		fmt.Println("Cache loaded from the disk")
+	}
+
 	aux := Auxiliary{
 		LRU: lru,
 	}
 
+	r := mux.NewRouter()
+	r.Use(mux.CORSMethodMiddleware(r))
+
 	r.HandleFunc("/data", aux.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", aux.Get).Methods("GET")
 
-	port := os.Getenv("PORT")
-
 	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
 
+	port := os.Getenv("PORT")
 	srv := http.Server{
 		Addr:         fmt.Sprintf(":%s", port),
 		WriteTimeout: time.Second * 15,
@@ -40,24 +54,77 @@ func Start() {
 	errChan := make(chan error)
 
 	go func() {
-		errChan <- srv.ListenAndServe()
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		}
 	}()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
+	// Save cache to disk every 10 sec for persistent storage
+	go func() {
+		for {
+			time.Sleep(time.Second * 10)
+			fmt.Println("Saving cache to disk...")
+			if ok, err := lru.saveToDisk(); !ok {
+				fmt.Printf("Error saving to disk. Err: %s\n", err.Error())
+			}
+		}
+	}()
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	go func() {
+		<-sigCtx.Done()
+
+		fmt.Println("Shutting down successfully...")
+		fmt.Println("Saving cache to disk...")
+
+		if ok, err := lru.saveToDisk(); !ok {
+			fmt.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+
+		defer func() {
+			stop()
+			cancel()
+			close(errChan)
+		}()
+
+		if err := srv.Shutdown(ctx); err != nil {
+			fmt.Printf("Error: %s\n", err)
+			errChan <- err
+		} else {
+			fmt.Println("Shutdown complete")
+		}
+
+	}()
+	// sigChan := make(chan os.Signal, 1)
+	// signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	log.Println("Aux is listening on the port ", port)
 
-	select {
-	case err := <-errChan:
-		fmt.Printf("Error: %s\n", err)
-	case <-sigChan:
-		fmt.Println("Shutting down successfully...")
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			fmt.Printf("Error: %s\n", err)
-		}
+	if err := <-errChan; err != nil {
+		log.Fatalf("Error while running: %s", err)
 	}
+
+	// select {
+	// case err := <-errChan:
+	// 	fmt.Printf("Error: %s\n", err)
+	// case sig := <-sigChan:
+	// 	fmt.Printf("Received signal: %s\n", sig)
+	// 	fmt.Println("Shutting down successfully...")
+	// 	fmt.Println("Saving cache to disk...")
+
+	// 	if ok, err := lru.saveToDisk(); !ok {
+	// 		fmt.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
+	// 	}
+	// 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	// 	defer cancel()
+	// 	if err := srv.Shutdown(ctx); err != nil {
+	// 		fmt.Printf("Error: %s\n", err)
+	// 	} else {
+	// 		fmt.Println("Shutdown complete")
+	// 	}
+	// }
 
 }
