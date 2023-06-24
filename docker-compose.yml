@@ -17,10 +17,12 @@ services:
       context: "./auxiliary"
     environment:
       - PORT=3001
+      - ID=aux1
     ports:
       - 9001:3001
     volumes:
       - ./auxiliary:/app
+      - ./data:/data
  
 
   aux2:
@@ -28,10 +30,12 @@ services:
       context: "./auxiliary"
     environment:
       - PORT=3002
+      - ID=aux2
     ports:
       - 9002:3002
     volumes:
       - ./auxiliary:/app
+      - ./data:/data
 
 
   aux3:
@@ -39,7 +43,13 @@ services:
       context: "./auxiliary"
     environment:
       - PORT=3003
+      - ID=aux3
     ports:
       - 9003:3003
     volumes:
       - ./auxiliary:/app
+      - ./data:/data
+
+volumes:
+  cache-data:
+
