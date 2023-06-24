@@ -13,18 +13,31 @@ type DLL struct {
 }
 
 func NewDLL() *DLL {
-	sentinal := &Node{}
-	return &DLL{
-		Head: sentinal,
-		Tail: sentinal,
-	}
+	return &DLL{}
 }
 
 func (dll *DLL) Prepend(node *Node) {
+	if dll.Head == nil {
+		dll.Head = node
+		dll.Tail = node
+		return
+	}
 	node.Next = dll.Head
 	dll.Head.Previous = node
 	dll.Head = node
 	node.Previous = nil
+}
+
+func (dll *DLL) Append(node *Node) {
+	if dll.Head == nil {
+		dll.Head = node
+		dll.Tail = node
+		return
+	}
+	node.Previous = dll.Tail
+	node.Next = nil
+	dll.Tail.Next = node
+	dll.Tail = node
 }
 
 func (dll *DLL) Remove(node *Node) {
@@ -32,8 +45,12 @@ func (dll *DLL) Remove(node *Node) {
 		return
 	}
 
+	if node == dll.Head {
+		dll.Head = node.Next
+	}
+
 	if node == dll.Tail {
-		dll.Tail = dll.Tail.Previous
+		dll.Tail = node.Previous
 	}
 
 	if node.Previous != nil {
