@@ -6,4 +6,8 @@ COPY . .
 
 RUN go get .
 
-CMD ["go","run","."]
+RUN go build -o master .
+
+RUN chmod +x master
+
+CMD ["go","run","master"]
