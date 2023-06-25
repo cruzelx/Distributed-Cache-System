@@ -12,6 +12,20 @@ import (
 
 type Master struct {
 	hashring *HashRing
+	client   *http.Client
+}
+
+func NewMaster() *Master {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+	}
+	client := &http.Client{Transport: transport}
+
+	return &Master{
+		client:   client,
+		hashring: NewHashRing(3),
+	}
 }
 
 type KeyVal struct {
@@ -41,7 +55,7 @@ func (m *Master) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := http.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
+	resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -66,7 +80,7 @@ func (m *Master) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := http.Get(fmt.Sprintf("http://%s/data/%s", node, key))
+	resp, err := m.client.Get(fmt.Sprintf("http://%s/data/%s", node, key))
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return

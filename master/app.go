@@ -22,11 +22,11 @@ func Start() {
 	value := os.Getenv("AUX_SERVERS")
 	aux_servers := strings.Split(value, ",")
 
-	hr := NewHashRing(3)
+	m := NewMaster()
+
 	for _, aux_server := range aux_servers {
-		hr.AddNode(aux_server)
+		m.hashring.AddNode(aux_server)
 	}
-	m := Master{hashring: hr}
 
 	r.HandleFunc("/data", m.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
