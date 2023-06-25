@@ -4,12 +4,22 @@ services:
   master: 
     build: 
       context: "./master"
-    ports:
-      - 8000:8000
+    scale: 3
+    # ports:
+    #   - 8000:8000
     environment:
       - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
     volumes:
       - ./master:/app
+
+  nginx:
+    image: "nginx"
+    depends_on:
+      - master
+    ports:
+      - 8080:3000
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/
   
 
   aux1:
@@ -49,7 +59,4 @@ services:
     volumes:
       - ./auxiliary:/app
       - ./data:/data
-
-volumes:
-  cache-data:
 
