@@ -25,9 +25,9 @@ func Start() {
 
 	// Check if the cache file already exists and load the data in LRU cache
 	if ok, err := lru.loadFromDisk(); !ok {
-		fmt.Println("Error loading from disk:  ", err)
+		log.Println("Error loading from disk:  ", err)
 	} else {
-		fmt.Println("Cache loaded from the disk")
+		log.Println("Cache loaded from the disk")
 	}
 
 	aux := Auxiliary{
@@ -63,9 +63,9 @@ func Start() {
 	go func() {
 		for {
 			time.Sleep(time.Second * 10)
-			fmt.Println("Saving cache to disk...")
+			log.Println("Saving cache to disk...")
 			if ok, err := lru.saveToDisk(); !ok {
-				fmt.Printf("Error saving to disk. Err: %s\n", err.Error())
+				log.Printf("Error saving to disk. Err: %s\n", err.Error())
 			}
 		}
 	}()
@@ -75,11 +75,11 @@ func Start() {
 	go func() {
 		<-sigCtx.Done()
 
-		fmt.Println("Shutting down successfully...")
-		fmt.Println("Saving cache to disk...")
+		log.Println("Shutting down successfully...")
+		log.Println("Saving cache to disk...")
 
 		if ok, err := lru.saveToDisk(); !ok {
-			fmt.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
+			log.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -91,10 +91,10 @@ func Start() {
 		}()
 
 		if err := srv.Shutdown(ctx); err != nil {
-			fmt.Printf("Error: %s\n", err)
+			log.Printf("Error: %s\n", err)
 			errChan <- err
 		} else {
-			fmt.Println("Shutdown complete")
+			log.Println("Shutdown complete")
 		}
 
 	}()
