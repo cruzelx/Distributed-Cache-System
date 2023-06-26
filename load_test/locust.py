@@ -19,7 +19,6 @@ class CacheBehaviour(TaskSet):
             "/data/"+random.choice(["water", "Interest", "Escape"]))
 
 
-class CaccheLoadTest(HttpUser):
+class CacheLoadTest(HttpUser):
     tasks = [CacheBehaviour]
     wait_time = between(1, 2)
-    host = "http://localhost:8080"
