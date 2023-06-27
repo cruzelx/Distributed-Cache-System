@@ -44,3 +44,22 @@ func (aux *Auxiliary) Get(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(KeyVal{Key: key, Value: val})
 
 }
+
+func (aux *Auxiliary) Mappings(w http.ResponseWriter, r *http.Request) {
+
+	keyvals := map[string]string{}
+	curr := aux.LRU.dll.Head
+
+	for curr != nil {
+		keyvals[curr.Key] = curr.Value
+		curr = curr.Next
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(keyvals)
+}
+
+func (aux *Auxiliary) Erase(w http.ResponseWriter, r *http.Request) {
+	aux.LRU.EraseCache()
+	w.WriteHeader(http.StatusOK)
+}
