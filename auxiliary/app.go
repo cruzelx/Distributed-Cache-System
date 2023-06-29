@@ -15,9 +15,11 @@ import (
 )
 
 func Start() {
-
-	// path of the file that stores the cache for persistence
+	// Load server configuration form env
+	port := os.Getenv("PORT")
 	serverId := os.Getenv("ID")
+
+	// Path of the file that stores the cache for persistence
 	filepath := "/data/" + serverId + "-" + "data.dat"
 
 	// Init LRU cache with 3 replica set and the location of cache file
@@ -39,10 +41,12 @@ func Start() {
 
 	r.HandleFunc("/data", aux.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", aux.Get).Methods("GET")
+	r.HandleFunc("/mappings", aux.Mappings).Methods("GET")
+	r.HandleFunc("/erase", aux.Erase).Methods("DELETE")
+	r.HandleFunc("/health", aux.Health).Methods("GET")
 
 	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
 
-	port := os.Getenv("PORT")
 	srv := http.Server{
 		Addr:         fmt.Sprintf(":%s", port),
 		WriteTimeout: time.Second * 15,
@@ -59,6 +63,7 @@ func Start() {
 		}
 	}()
 
+	log.Println("Aux is listening on the port ", port)
 	// Save cache to disk every 10 sec for persistent storage
 	go func() {
 		for {
@@ -70,11 +75,13 @@ func Start() {
 		}
 	}()
 
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
 	go func() {
-		<-sigCtx.Done()
+		signal := <-shutdown
 
+		log.Printf("Received signal: %v\n", signal)
 		log.Println("Shutting down successfully...")
 		log.Println("Saving cache to disk...")
 
@@ -85,7 +92,6 @@ func Start() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 
 		defer func() {
-			stop()
 			cancel()
 			close(errChan)
 		}()
@@ -95,16 +101,13 @@ func Start() {
 			errChan <- err
 		} else {
 			log.Println("Shutdown complete")
+			errChan <- nil
 		}
 
 	}()
-	// sigChan := make(chan os.Signal, 1)
-	// signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-
-	log.Println("Aux is listening on the port ", port)
 
 	if err := <-errChan; err != nil {
-		log.Fatalf("Error while running: %s", err)
+		log.Printf("Error: %v\n", err)
 	}
 
 	// select {
