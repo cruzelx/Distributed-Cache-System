@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"hash/crc32"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestHashRing_AddNode(t *testing.T) {
@@ -30,6 +33,29 @@ func TestHashRing_AddNode(t *testing.T) {
 			t.Errorf("Unexpected node mapping for key %s : got %s", k, node)
 		}
 	}
+}
+
+func TestHashRing_RemoveNode(t *testing.T) {
+	hr := NewHashRing(3)
+
+	hr.AddNode("aux1")
+	hr.AddNode("aux2")
+	hr.AddNode("aux3")
+
+	nodeToRemove := "aux3"
+	hashes := []uint32{}
+
+	for i := 0; i < hr.replica; i++ {
+		hash := crc32.ChecksumIEEE([]byte(fmt.Sprintf("%s:%d", nodeToRemove, i)))
+		hashes = append(hashes, hash)
+	}
+
+	hr.RemoveNode("aux3")
+
+	for _, h := range hashes {
+		assert.NotContains(t, hr.sortedHash, h, "Removed node hash still exist in sorted hash")
+	}
+
 }
 
 func TestHashRing_GetNode(t *testing.T) {
@@ -108,6 +134,26 @@ func TestHashRing_Performance(t *testing.T) {
 		float64(count["aux1:3001"])*100.0/float64(numOfKeys),
 		float64(count["aux2:3002"])*100.0/float64(numOfKeys),
 		float64(count["aux3:3003"])*100.0/float64(numOfKeys))
+}
+
+func Benchmark_HashRing_GetNode(b *testing.B) {
+	hr := NewHashRing(3)
+
+	hr.AddNode("aux1:3001")
+	hr.AddNode("aux2:3002")
+	hr.AddNode("aux3:3003")
+
+	for i := 0; i < b.N; i++ {
+		hr.GetNode("test-key")
+	}
+}
+
+func Benchmark_HashRing_AddNode(b *testing.B) {
+	hr := NewHashRing(3)
+
+	for i := 0; i < b.N; i++ {
+		hr.AddNode("aux1:3001")
+	}
 }
 
 func TestMain(m *testing.M) {
