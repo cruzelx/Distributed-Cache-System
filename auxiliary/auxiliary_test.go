@@ -170,6 +170,23 @@ func TestLRU_SaveAndLoadFromDisk(t *testing.T) {
 
 }
 
+func Benchmark_LRUPut(b *testing.B) {
+	lru := NewLRU(3, "")
+
+	for i := 0; i < b.N; i++ {
+		lru.Put("Alex", "Name")
+	}
+}
+
+func Benchmark_LRUGet(b *testing.B) {
+	lru := NewLRU(3, "")
+	lru.Put("Alex", "Name")
+
+	for i := 0; i < b.N; i++ {
+		lru.Get("Alex")
+	}
+}
+
 func TestMain(m *testing.M) {
 	m.Run()
 }
