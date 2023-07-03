@@ -34,6 +34,19 @@ func (hr *HashRing) AddNode(node string) {
 	})
 }
 
+func (hr *HashRing) RemoveNode(node string) {
+	var modifiedSortedHash []uint32
+
+	for _, hash := range hr.sortedHash {
+		if hr.hashmap[hash] != node {
+			modifiedSortedHash = append(modifiedSortedHash, hash)
+		} else {
+			delete(hr.hashmap, hash)
+		}
+	}
+	hr.sortedHash = modifiedSortedHash
+}
+
 func (hr *HashRing) GetNode(key string) (string, error) {
 	hash := crc32.ChecksumIEEE([]byte(key))
 	index := sort.Search(len(hr.sortedHash), func(i int) bool {
