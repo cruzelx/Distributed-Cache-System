@@ -7,10 +7,16 @@ services:
     scale: 3
     # ports:
     #   - 8000:8000
+    depends_on:
+      - zoo
     environment:
       - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
+      - ZOO_SERVERS=zoo:2181
     volumes:
       - ./master:/app
+      - ./data:/data
+    networks:
+      - cache-network
 
   nginx:
     image: "nginx"
@@ -20,43 +26,110 @@ services:
       - 8080:3000
     volumes:
       - ./nginx/conf.d:/etc/nginx/
+    networks:
+      - cache-network
   
 
   aux1:
     build:
       context: "./auxiliary"
+    restart: unless-stopped
     environment:
       - PORT=3001
       - ID=aux1
+      - ZOO_SERVERS=zoo:2181
     ports:
       - 9001:3001
+    depends_on:
+      - zoo
     volumes:
       - ./auxiliary:/app
+      # - ./auxiliary/entrypoint.sh:/app/entrypoint.sh
       - ./data:/data
+    # command: ["./entrypoint.sh"]
+    networks:
+      - cache-network
  
 
   aux2:
     build:
       context: "./auxiliary"
+    restart: unless-stopped
     environment:
       - PORT=3002
       - ID=aux2
+      - ZOO_SERVERS=zoo:2181
     ports:
       - 9002:3002
+    depends_on:
+      - zoo
     volumes:
       - ./auxiliary:/app
+      # - ./auxiliary/entrypoint.sh:/app/entrypoint.sh
       - ./data:/data
+    # command: ["./entrypoint.sh"]
+    networks:
+      - cache-network
 
 
   aux3:
     build:
       context: "./auxiliary"
+    restart: unless-stopped
     environment:
       - PORT=3003
       - ID=aux3
+      - ZOO_SERVERS=zoo:2181
     ports:
       - 9003:3003
+    depends_on:
+      - zoo
     volumes:
       - ./auxiliary:/app
+      # - ./auxiliary/entrypoint.sh:/app/entrypoint.sh
       - ./data:/data
+    # command: ["./entrypoint.sh"]
+    networks:
+      - cache-network
 
+# Cluster Management
+
+  zoo:
+    image: zookeeper
+    restart: always
+    ports:
+      - 2181:2181
+      - 2888:2888
+      - 3888:3888
+    networks:
+      - cache-network
+    volumes:
+      - ./zookeeper/zoo.cfg:/conf/zoo.cfg
+      - ./data/zookeeper:/data
+    environment:
+      - ZOO_MY_ID=1
+      - ZOO_SERVERS=server.1=zoo:2888:3888;2181
+
+# Metrics
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - 9090:9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - cache-network
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - 4000:3000
+    environment:
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - ./grafana:/var/lib/grafana
+    networks:
+      - cache-network
+
+networks:
+  cache-network:
