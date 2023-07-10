@@ -6,10 +6,10 @@ WORKDIR /app
 
 COPY . .
 
-RUN go get .
+RUN go mod download
 
-RUN go build -o auxiliary .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /auxiliary
 
-RUN chmod +x auxiliary
+RUN chmod +x /auxiliary
 
-CMD ["go","run","auxiliary"]
+CMD [ "/auxiliary" ]
