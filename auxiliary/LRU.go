@@ -47,6 +47,11 @@ func (lru *LRU) Put(key string, value string) {
 
 }
 
+func (lru *LRU) EraseCache() {
+	lru.dll = NewDLL()
+	lru.bucket = make(map[string]*Node, lru.capacity)
+}
+
 func (lru *LRU) saveToDisk() (bool, error) {
 
 	file, err := os.OpenFile(lru.filepath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0777)
