@@ -36,6 +36,15 @@ func Start() {
 		LRU: lru,
 	}
 
+	// Connect to zookeeper servers
+
+	manager := NewManager()
+	defer manager.Close()
+
+	if err := manager.CreateAuxiliaryNode(); err != nil {
+		log.Printf("%s: failed to create auxiliary node in zookeeper: %v\n", serverId, err)
+	}
+
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
@@ -89,6 +98,8 @@ func Start() {
 			log.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
 		}
 
+		aux.SendMappings()
+
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 
 		defer func() {
@@ -109,25 +120,5 @@ func Start() {
 	if err := <-errChan; err != nil {
 		log.Printf("Error: %v\n", err)
 	}
-
-	// select {
-	// case err := <-errChan:
-	// 	fmt.Printf("Error: %s\n", err)
-	// case sig := <-sigChan:
-	// 	fmt.Printf("Received signal: %s\n", sig)
-	// 	fmt.Println("Shutting down successfully...")
-	// 	fmt.Println("Saving cache to disk...")
-
-	// 	if ok, err := lru.saveToDisk(); !ok {
-	// 		fmt.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
-	// 	}
-	// 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	// 	defer cancel()
-	// 	if err := srv.Shutdown(ctx); err != nil {
-	// 		fmt.Printf("Error: %s\n", err)
-	// 	} else {
-	// 		fmt.Println("Shutdown complete")
-	// 	}
-	// }
 
 }
