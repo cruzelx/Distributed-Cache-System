@@ -18,6 +18,8 @@ func NewManager() *Zookeeper {
 	servers := os.Getenv("ZOO_SERVERS")
 	zooServers := strings.Split(servers, ",")
 
+	time.Sleep(time.Second * 10)
+
 	conn, err := connectToZookeeper(zooServers, time.Second*5)
 	if err != nil {
 		log.Fatalln("Failed to connect to zookeeper server(s): ", err)
@@ -38,19 +40,29 @@ func connectToZookeeper(servers []string, time time.Duration) (*zk.Conn, error) 
 
 func (z *Zookeeper) CreateAuxiliaryNode() error {
 
-	host := os.Getenv("ID") + ":" + os.Getenv("PORT")
-	auxPath := "/auxiliaries/" + host
+	auxRoot := "/auxiliaries"
 
-	exists, _, err := z.conn.Exists(auxPath)
+	host := os.Getenv("ID") + ":" + os.Getenv("PORT")
+	auxPath := auxRoot + "/" + host
+
+	exists, _, err := z.conn.Exists(auxRoot)
+	if err != nil {
+		return fmt.Errorf("failed to check if root aux znode exists: %v", err)
+	}
+
+	if !exists {
+		if _, err := z.conn.Create(auxRoot, []byte{}, int32(0), zk.WorldACL(zk.PermAll)); err != nil {
+			return fmt.Errorf("failed to create root aux znode: %v", err)
+		}
+	}
+
+	exists, _, err = z.conn.Exists(auxPath)
 	if err != nil {
 		return fmt.Errorf("failed to check if aux node exists: %v", err)
 	}
 
 	if !exists {
-		flag := int32(0)
-		acl := zk.WorldACL(zk.PermAll)
-
-		if _, err := z.conn.Create(auxPath, []byte{}, flag, acl); err != nil {
+		if _, err := z.conn.Create(auxPath, []byte{}, int32(0), zk.WorldACL(zk.PermAll)); err != nil {
 			return fmt.Errorf("failed to create the aux node: %v", err)
 		}
 
