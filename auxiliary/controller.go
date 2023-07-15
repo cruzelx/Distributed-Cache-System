@@ -84,16 +84,17 @@ func (aux *Auxiliary) SendMappings() {
 
 	postBody, err := json.Marshal(keyvals)
 	if err != nil {
-		log.Printf("couldn't parse key-val pairs: %v\n", err)
+		log.Printf("failed to parse key-val pairs: %v\n", err)
 		return
 	}
 
 	log.Println("Sending mappings to master server...")
 
 	client := &http.Client{}
-	req, err := http.NewRequest("POST", "http://master:8000/rebalance-dead-aux", bytes.NewBuffer(postBody))
+	masterPort := os.Getenv("MASTER_PORT")
+	req, err := http.NewRequest("POST", fmt.Sprintf("http://master:%s/rebalance-dead-aux", masterPort), bytes.NewBuffer(postBody))
 	if err != nil {
-		log.Println("couldn't create the request")
+		log.Println("failed to create the request")
 		return
 	}
 
@@ -107,7 +108,7 @@ func (aux *Auxiliary) SendMappings() {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Println("couldn't send mappings to master server")
+		log.Println("failed to send mappings to master server")
 		return
 	}
 	defer resp.Body.Close()
