@@ -36,15 +36,6 @@ func Start() {
 		LRU: lru,
 	}
 
-	// Connect to zookeeper servers
-
-	manager := NewManager()
-	defer manager.Close()
-
-	if err := manager.CreateAuxiliaryNode(); err != nil {
-		log.Printf("%s: failed to create auxiliary node in zookeeper: %v\n", serverId, err)
-	}
-
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
@@ -95,7 +86,7 @@ func Start() {
 		log.Println("Saving cache to disk...")
 
 		if ok, err := lru.saveToDisk(); !ok {
-			log.Printf("Couldn't save the cache on disk\n error: %s", err.Error())
+			log.Printf("failed to save the cache on disk\n error: %s", err.Error())
 		}
 
 		aux.SendMappings()
