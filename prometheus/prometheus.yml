@@ -1,0 +1,22 @@
+global:
+  scrape_interval: "10s"
+  scrape_timeout: "10s"
+  evaluation_interval: "10s"
+
+scrape_configs:
+  - job_name: "master"
+    static_configs:
+      - targets:
+          - "master:8000"
+  - job_name: "aux1"
+    static_configs:
+      - targets:
+        - "aux1:3001"
+  - job_name: "aux2"
+    static_configs:
+      - targets:
+        - "aux2:3002"
+  - job_name: "aux3"
+    static_configs:
+      - targets:
+        - "aux3:3003"
