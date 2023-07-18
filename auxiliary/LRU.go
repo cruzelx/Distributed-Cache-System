@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/gob"
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -77,16 +78,16 @@ func (lru *LRU) saveToDisk() (bool, error) {
 	if err := encode.Encode(temp); err != nil {
 		return false, err
 	}
-	fmt.Println("saved at: ", lru.filepath)
+	log.Println("saved at: ", lru.filepath)
 	return true, nil
 }
 
 func (lru *LRU) loadFromDisk() (bool, error) {
 	file, err := os.Open(lru.filepath)
-	defer file.Close()
 	if err != nil {
 		return os.IsNotExist(err), err
 	}
+	defer file.Close()
 
 	decode := gob.NewDecoder(file)
 
