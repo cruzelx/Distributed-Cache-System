@@ -25,3 +25,6 @@ data
 
 #python cache
 __pycache__
+
+#ignore metrics
+grafana
