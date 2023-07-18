@@ -33,14 +33,14 @@ func Start() {
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
-	// handlers
+	// Handlers
 	r.HandleFunc("/data", m.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
 
-	// rebalance when a aux server is shutting down
+	// Rebalance when a aux server is shutting down
 	r.HandleFunc("/rebalance-dead-aux", m.RebalanceDeadAuxServer).Methods("POST")
 
-	// instrumentation
+	// Instrumentation
 	r.Handle("/metrics", promhttp.Handler())
 
 	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
@@ -57,9 +57,12 @@ func Start() {
 	errChan := make(chan error)
 
 	go func() {
-		errChan <- srv.ListenAndServe()
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		}
 	}()
 
+	// Listen to termination signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -68,24 +71,27 @@ func Start() {
 	healthChan := make(chan interface{})
 	go m.HealthCheck(time.Second*5, healthChan)
 
+	defer func() {
+		close(errChan)
+		close(sigChan)
+		close(healthChan)
+	}()
+
 	select {
 	case err := <-errChan:
-		fmt.Printf("Error: %s\n", err)
-
+		log.Printf("error: %s\n", err.Error())
 		healthChan <- struct{}{}
-		defer close(healthChan)
 
 	case <-sigChan:
-		fmt.Println("Shutting down successfully...")
+		log.Println("shutting down...")
 
 		healthChan <- struct{}{}
-		defer close(healthChan)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
 
 		if err := srv.Shutdown(ctx); err != nil {
-			fmt.Printf("Error: %s\n", err)
+			log.Printf("error: %s\n", err)
 		}
 	}
 
