@@ -9,9 +9,13 @@ services:
     #   - 8000:8000
     depends_on:
       - zoo
+      - aux1
+      - aux2
+      - aux3
     environment:
       - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
       - ZOO_SERVERS=zoo:2181
+      - PORT=8000
     volumes:
       - ./master:/app
       - ./data:/data
@@ -36,6 +40,7 @@ services:
     restart: unless-stopped
     environment:
       - PORT=3001
+      - MASTER_SERVER=master:8000
       - ID=aux1
       - ZOO_SERVERS=zoo:2181
     ports:
@@ -44,9 +49,7 @@ services:
       - zoo
     volumes:
       - ./auxiliary:/app
-      # - ./auxiliary/entrypoint.sh:/app/entrypoint.sh
       - ./data:/data
-    # command: ["./entrypoint.sh"]
     networks:
       - cache-network
  
@@ -57,6 +60,7 @@ services:
     restart: unless-stopped
     environment:
       - PORT=3002
+      - MASTER_SERVER=master:8000
       - ID=aux2
       - ZOO_SERVERS=zoo:2181
     ports:
@@ -65,9 +69,7 @@ services:
       - zoo
     volumes:
       - ./auxiliary:/app
-      # - ./auxiliary/entrypoint.sh:/app/entrypoint.sh
       - ./data:/data
-    # command: ["./entrypoint.sh"]
     networks:
       - cache-network
 
@@ -78,6 +80,7 @@ services:
     restart: unless-stopped
     environment:
       - PORT=3003
+      - MASTER_SERVER=master:8000
       - ID=aux3
       - ZOO_SERVERS=zoo:2181
     ports:
@@ -86,9 +89,7 @@ services:
       - zoo
     volumes:
       - ./auxiliary:/app
-      # - ./auxiliary/entrypoint.sh:/app/entrypoint.sh
       - ./data:/data
-    # command: ["./entrypoint.sh"]
     networks:
       - cache-network
 
