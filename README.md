@@ -2,7 +2,7 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*
 
-- [Distributed-Cache-System (Documentation in progress)](#distributed-cache-system-documentation-in-progress)
+- [Distributed-Cache-System](#distributed-cache-system)
   - [Features](#features)
   - [Architecture](#architecture)
   - [Data flow](#data-flow)
@@ -15,7 +15,7 @@
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-# Distributed-Cache-System (Documentation in progress)
+# Distributed-Cache-System
 This implementation of the distributed cache system is an attempt to make a high-performant, scalable and fault-tolerant caching solution to improve performance and efficiency of distributed systems. It utilizes master-slave architecture, where master servers select which auxiliary server to choose when getting or putting key-vals. 
 
 ![Architecture of Distributed Cache System](distributed-cache.png)
@@ -86,6 +86,10 @@ The Distributed Cache System consists of the following components:
 2. Build and run the Docker containers for the master and auxiliary servers:
    ```
     docker-compose up --build
+   ```
+3. Run load testing:
+   ```
+   ./load_test/loadTest.sh
    ```
 
 ## TODO
