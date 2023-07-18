@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"hash/crc32"
 	"sort"
@@ -59,6 +58,6 @@ func (hr *HashRing) GetNode(key string) (string, error) {
 	if _, ok := hr.hashmap[hr.sortedHash[index]]; ok {
 		return hr.hashmap[hr.sortedHash[index]], nil
 	} else {
-		return "", errors.New("node not found for the key")
+		return "", fmt.Errorf("node not found for the key %s", key)
 	}
 }
