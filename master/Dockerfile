@@ -1,15 +1,17 @@
 FROM golang:1.17-alpine
 
+RUN mkdir -p /data
+
 WORKDIR /app
 
 COPY . .
 
-RUN go get .
+RUN go mod download
 
-RUN go build -o master .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /master
 
-RUN chmod +x master
+RUN chmod +x /master
 
 EXPOSE 8000
 
-CMD ["go","run","master"]
+CMD ["/master"]
