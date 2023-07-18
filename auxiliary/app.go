@@ -12,9 +12,11 @@ import (
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func Start() {
+
 	// Load server configuration form env
 	port := os.Getenv("PORT")
 	serverId := os.Getenv("ID")
@@ -22,31 +24,35 @@ func Start() {
 	// Path of the file that stores the cache for persistence
 	filepath := "/data/" + serverId + "-" + "data.dat"
 
-	// Init LRU cache with 3 replica set and the location of cache file
-	lru := NewLRU(3, filepath)
+	aux := NewAuxiliary(3, filepath)
 
 	// Check if the cache file already exists and load the data in LRU cache
-	if ok, err := lru.loadFromDisk(); !ok {
-		log.Println("Error loading from disk:  ", err)
+	if ok, err := aux.LRU.loadFromDisk(); !ok {
+		log.Println("error loading from disk:  ", err)
 	} else {
-		log.Println("Cache loaded from the disk")
-	}
-
-	aux := Auxiliary{
-		LRU: lru,
+		log.Println("cache loaded from the disk")
 	}
 
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
+	// Handlers
 	r.HandleFunc("/data", aux.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", aux.Get).Methods("GET")
+
+	// Send all key-val mappings
 	r.HandleFunc("/mappings", aux.Mappings).Methods("GET")
+
+	// Empty the cache
 	r.HandleFunc("/erase", aux.Erase).Methods("DELETE")
+
+	// Monitor health to check alive status
 	r.HandleFunc("/health", aux.Health).Methods("GET")
 
-	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
+	// Instrumentation
+	r.Handle("/metrics", promhttp.Handler())
 
+	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
 	srv := http.Server{
 		Addr:         fmt.Sprintf(":%s", port),
 		WriteTimeout: time.Second * 15,
@@ -63,53 +69,51 @@ func Start() {
 		}
 	}()
 
-	log.Println("Aux is listening on the port ", port)
+	log.Println("aux is listening on the port ", port)
+
 	// Save cache to disk every 10 sec for persistent storage
 	go func() {
 		for {
 			time.Sleep(time.Second * 10)
-			log.Println("Saving cache to disk...")
-			if ok, err := lru.saveToDisk(); !ok {
-				log.Printf("Error saving to disk. Err: %s\n", err.Error())
+			log.Println("saving cache to disk...")
+
+			if ok, err := aux.LRU.saveToDisk(); !ok {
+				log.Printf("failed saving cache to disk: %s\n", err.Error())
 			}
 		}
 	}()
 
+	// Listen to termination signals
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
-	go func() {
-		signal := <-shutdown
+	defer func() {
+		close(errChan)
+		close(shutdown)
+	}()
 
-		log.Printf("Received signal: %v\n", signal)
-		log.Println("Shutting down successfully...")
-		log.Println("Saving cache to disk...")
+	select {
+	case err := <-errChan:
+		log.Printf("error: %s\n", err.Error())
+	case signal := <-shutdown:
 
-		if ok, err := lru.saveToDisk(); !ok {
-			log.Printf("failed to save the cache on disk\n error: %s", err.Error())
+		log.Printf("received signal: %v\n", signal)
+		log.Println("shutting down...")
+		log.Println("saving cache to disk...")
+
+		if ok, err := aux.LRU.saveToDisk(); !ok {
+			log.Printf("failed to save the cache to disk: %s", err.Error())
 		}
 
+		// send mappings to master before shutting down
 		aux.SendMappings()
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-
-		defer func() {
-			cancel()
-			close(errChan)
-		}()
+		defer cancel()
 
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("Error: %s\n", err)
-			errChan <- err
-		} else {
-			log.Println("Shutdown complete")
-			errChan <- nil
+			log.Printf("error: %s\n", err.Error())
 		}
-
-	}()
-
-	if err := <-errChan; err != nil {
-		log.Printf("Error: %v\n", err)
 	}
 
 }
