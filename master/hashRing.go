@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"hash/crc32"
 	"sort"
+	"sync"
 )
 
 type HashRing struct {
+	mutex      sync.Mutex
 	sortedHash []uint32
 	hashmap    map[uint32]string
 	replica    int
@@ -17,10 +19,14 @@ func NewHashRing(replica int) *HashRing {
 		sortedHash: []uint32{},
 		hashmap:    make(map[uint32]string),
 		replica:    replica,
+		mutex:      sync.Mutex{},
 	}
 }
 
 func (hr *HashRing) AddNode(node string) {
+	hr.mutex.Lock()
+	defer hr.mutex.Unlock()
+
 	for i := 0; i < hr.replica; i++ {
 		replicaKey := fmt.Sprintf("%s:%d", node, i)
 		hash := crc32.ChecksumIEEE([]byte(replicaKey))
@@ -34,6 +40,9 @@ func (hr *HashRing) AddNode(node string) {
 }
 
 func (hr *HashRing) RemoveNode(node string) {
+	hr.mutex.Lock()
+	defer hr.mutex.Unlock()
+
 	var modifiedSortedHash []uint32
 
 	for _, hash := range hr.sortedHash {
@@ -47,6 +56,10 @@ func (hr *HashRing) RemoveNode(node string) {
 }
 
 func (hr *HashRing) GetNode(key string) (string, error) {
+
+	hr.mutex.Lock()
+	defer hr.mutex.Unlock()
+
 	hash := crc32.ChecksumIEEE([]byte(key))
 	index := sort.Search(len(hr.sortedHash), func(i int) bool {
 		return hr.sortedHash[i] >= hash
