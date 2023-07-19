@@ -16,7 +16,7 @@
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 # Distributed-Cache-System
-This implementation of the distributed cache system is an attempt to make a high-performant, scalable and fault-tolerant caching solution to improve performance and efficiency of distributed systems. It utilizes master-slave architecture, where master servers select which auxiliary server to choose when getting or putting key-vals. 
+This implementation of the distributed cache system is an attempt to make a high-performant, scalable and fault-tolerant caching solution to improve performance and efficiency of distributed systems. It utilizes master-auxiliary architecture, where master servers select which auxiliary server to choose when getting or putting key-vals. 
 
 ![Architecture of Distributed Cache System](distributed-cache.png)
 ## Features
@@ -39,7 +39,7 @@ The Distributed Cache System consists of the following components:
 
 - **Master Server**: The master node acts as the central coordinator and is responsible for handling client requests. It receives key-value pairs from clients and determines the appropriate auxiliary server to store the data using a consistent hashing algorithm. The master node also handles the retrieval of data from auxiliary servers and forwards read requests accordingly.
 
-- **Auxiliary (Aux) Servers**: The auxiliary servers, also known as slave nodes, store the cached data. They are replicated instances deployed in a consistent hash ring to ensure efficient distribution and load balancing. Each auxiliary server is responsible for maintaining a local LRU (Least Recently Used) cache, implemented using a combination of a hashtable and a doubly linked list (DLL). This cache allows for fast access and eviction of less frequently used data.
+- **Auxiliary (Aux) Servers**: The auxiliary servers store the cached data. They are replicated instances deployed in a consistent hash ring to ensure efficient distribution and load balancing. Each auxiliary server is responsible for maintaining a local LRU (Least Recently Used) cache, implemented using a combination of a hashtable and a doubly linked list (DLL). This cache allows for fast access and eviction of less frequently used data.
 
 - **Load Balancing**: The load balancer, typically implemented using nginx, acts as an intermediary between the clients and the master node. It distributes incoming client requests across multiple instances of the master node, enabling horizontal scaling and improved availability.
 
