@@ -57,8 +57,6 @@ services:
       - ID=aux1
     ports:
       - 9001:3001
-    depends_on:
-      - nginx
     volumes:
       - ./auxiliary:/app
       - ./data:/data
@@ -75,8 +73,6 @@ services:
       - ID=aux2
     ports:
       - 9002:3002
-    depends_on:
-      - nginx
     volumes:
       - ./auxiliary:/app
       - ./data:/data
@@ -93,8 +89,6 @@ services:
       - ID=aux3
     ports:
       - 9003:3003
-    depends_on:
-      - nginx
     volumes:
       - ./auxiliary:/app
       - ./data:/data

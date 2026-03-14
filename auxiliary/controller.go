@@ -92,17 +92,8 @@ func (aux *Auxiliary) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (aux *Auxiliary) Mappings(w http.ResponseWriter, r *http.Request) {
-
-	keyvals := map[string]string{}
-	curr := aux.LRU.dll.Head
-
-	for curr != nil {
-		keyvals[curr.Key] = curr.Value
-		curr = curr.Next
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(keyvals)
+	json.NewEncoder(w).Encode(aux.LRU.GetAll())
 }
 
 func (aux *Auxiliary) Erase(w http.ResponseWriter, r *http.Request) {
@@ -116,15 +107,7 @@ func (aux *Auxiliary) Health(w http.ResponseWriter, r *http.Request) {
 
 func (aux *Auxiliary) SendMappings() {
 
-	keyvals := map[string]string{}
-	curr := aux.LRU.dll.Head
-
-	for curr != nil {
-		keyvals[curr.Key] = curr.Value
-		curr = curr.Next
-	}
-
-	postBody, err := json.Marshal(keyvals)
+	postBody, err := json.Marshal(aux.LRU.GetAll())
 	if err != nil {
 		log.Printf("failed to parse key-val pairs: %v\n", err)
 		return
