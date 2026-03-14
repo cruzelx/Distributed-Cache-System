@@ -17,8 +17,34 @@ import (
 )
 
 const (
-	backupFilePath = "/data/backupCache.dat"
+	BackupFilePath = "/data/backupCache.dat"
 )
+
+var (
+	masterRequests     *prometheus.CounterVec
+	masterResponseTime *prometheus.HistogramVec
+	metricsOnce        sync.Once
+)
+
+func initMetrics() {
+	metricsOnce.Do(func() {
+		masterRequests = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "master_request_total",
+				Help: "Total number of requests to the master node",
+			}, []string{"method"},
+		)
+		masterResponseTime = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "master_response_time_seconds",
+				Help:    "Distribution of the response time processed by the master server",
+				Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+			},
+			[]string{"method"},
+		)
+		prometheus.MustRegister(masterRequests, masterResponseTime)
+	})
+}
 
 type Master struct {
 	hashring         *HashRing
@@ -27,48 +53,42 @@ type Master struct {
 	responseTime     *prometheus.HistogramVec
 	filepath         string
 	auxServers       []string
+	auxMu            sync.RWMutex
 	activeAuxServers map[string]bool
+	role             string // "primary" or "standby"
+	standby          string // address of standby server (primary only)
 }
 
-func NewMaster() *Master {
+func NewMaster(role, standby string) *Master {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 	}
 	client := &http.Client{Transport: transport}
 
-	requests := prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "master_request_total",
-			Help: "Total number of requests to the master node",
-		}, []string{"method"},
-	)
-
-	responseTime := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "master_response_time_seconds",
-			Help:    "Distribution of the response time processed by the master server",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
-		},
-		[]string{"method"},
-	)
-
-	prometheus.MustRegister(requests, responseTime)
+	initMetrics()
 
 	return &Master{
 		client:           client,
 		hashring:         NewHashRing(3),
-		requests:         requests,
-		responseTime:     responseTime,
-		filepath:         backupFilePath,
+		requests:         masterRequests,
+		responseTime:     masterResponseTime,
+		filepath:         BackupFilePath,
 		auxServers:       getAuxServers(),
 		activeAuxServers: make(map[string]bool),
+		role:             role,
+		standby:          standby,
 	}
 }
 
 type KeyVal struct {
 	Key   string `json:key`
 	Value string `json:value`
+}
+
+type RingUpdate struct {
+	Action string `json:"action"` // "add" or "remove"
+	Aux    string `json:"aux"`
 }
 
 func (m *Master) Put(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +205,7 @@ func (m *Master) rebalance(keyvals map[string]string) {
 					log.Printf("failed to send key-value pair to aux server %s", node)
 					continue
 				}
-				defer resp.Body.Close()
+				resp.Body.Close()
 			}
 		}(i)
 	}
@@ -194,11 +214,11 @@ func (m *Master) rebalance(keyvals map[string]string) {
 		keyvalChan <- KeyVal{Key: k, Value: v}
 	}
 
-	defer close(keyvalChan)
+	close(keyvalChan)
+	wg.Wait()
+
 	elapsedTime := time.Since(startTime).Seconds()
-
 	log.Printf("mapped keys in %v sec(s)\n", elapsedTime)
-
 }
 
 func (m *Master) backupCacheToDisk(keyvals map[string]string) error {
@@ -209,6 +229,7 @@ func (m *Master) backupCacheToDisk(keyvals map[string]string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create backup file: %v", err)
 			}
+			defer file.Close()
 
 			encode := gob.NewEncoder(file)
 			if err := encode.Encode(keyvals); err != nil {
@@ -242,6 +263,7 @@ func (m *Master) RestoreCacheFromDisk() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file %s: %v", m.filepath, err)
 	}
+	defer file.Close()
 
 	var mappings map[string]string
 
@@ -290,6 +312,122 @@ func (m *Master) RebalanceDeadAuxServer(w http.ResponseWriter, r *http.Request) 
 
 }
 
+func (m *Master) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
+// StateHandler returns the current activeAuxServers map so the standby can mirror it.
+func (m *Master) StateHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	m.auxMu.RLock()
+	defer m.auxMu.RUnlock()
+	json.NewEncoder(w).Encode(m.activeAuxServers)
+}
+
+// RingUpdateHandler receives ring change events pushed by the primary.
+func (m *Master) RingUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	var update RingUpdate
+	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+	switch update.Action {
+	case "add":
+		m.hashring.AddNode(update.Aux)
+		m.activeAuxServers[update.Aux] = true
+	case "remove":
+		m.hashring.RemoveNode(update.Aux)
+		m.activeAuxServers[update.Aux] = false
+	default:
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	log.Printf("standby ring update applied: %s %s", update.Action, update.Aux)
+}
+
+// pushRingUpdate fires a non-blocking ring change notification to the standby.
+func (m *Master) pushRingUpdate(action, aux string) {
+	if m.standby == "" {
+		return
+	}
+	update := RingUpdate{Action: action, Aux: aux}
+	body, err := json.Marshal(update)
+	if err != nil {
+		log.Printf("failed to marshal ring update: %v", err)
+		return
+	}
+	resp, err := m.client.Post(
+		fmt.Sprintf("http://%s/ring-update", m.standby),
+		"application/json",
+		bytes.NewBuffer(body),
+	)
+	if err != nil {
+		log.Printf("failed to push ring update to standby %s: %v", m.standby, err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// initFromPrimary polls the primary's /state endpoint until it responds, then
+// builds the local ring from the returned activeAuxServers map.
+func (m *Master) initFromPrimary(primaryAddr string) {
+	for {
+		resp, err := m.client.Get(fmt.Sprintf("http://%s/state", primaryAddr))
+		if err != nil {
+			log.Printf("standby: waiting for primary at %s...", primaryAddr)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		var state map[string]bool
+		if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+			resp.Body.Close()
+			log.Printf("standby: failed to decode primary state: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		resp.Body.Close()
+		m.auxMu.Lock()
+		m.activeAuxServers = state
+		m.auxMu.Unlock()
+		for aux, active := range state {
+			if active {
+				m.hashring.AddNode(aux)
+			}
+		}
+		log.Printf("standby: initialized ring from primary (%d servers)", len(state))
+		return
+	}
+}
+
+// monitorPrimary polls the primary's /health endpoint. After 3 consecutive
+// failures it signals the promote channel and exits.
+func (m *Master) monitorPrimary(primaryAddr string, promote chan<- struct{}, stop <-chan interface{}) {
+	failures := 0
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+			resp, err := m.client.Get(fmt.Sprintf("http://%s/health", primaryAddr))
+			if err == nil {
+				resp.Body.Close()
+				failures = 0
+			} else {
+				failures++
+				log.Printf("standby: primary health check failed (%d/3)", failures)
+				if failures >= 3 {
+					log.Println("standby: primary unreachable, promoting to primary")
+					promote <- struct{}{}
+					return
+				}
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
 func (m *Master) checkAuxServerHealth(auxServer string) bool {
 	resp, err := m.client.Get(fmt.Sprintf("http://%s/health", auxServer))
 	if err != nil {
@@ -302,8 +440,11 @@ func (m *Master) checkAuxServerHealth(auxServer string) bool {
 }
 
 func (m *Master) handleDeadAuxServer(deadAux string) {
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
 	if val, ok := m.activeAuxServers[deadAux]; ok && val {
 		m.hashring.RemoveNode(deadAux)
+		go m.pushRingUpdate("remove", deadAux)
 	}
 	m.activeAuxServers[deadAux] = false
 	log.Printf("heart of %s has stopped beating... ", deadAux)
@@ -333,6 +474,8 @@ func (m *Master) getDistinctNodesToRebalance(node string) []string {
 }
 
 func (m *Master) handleAliveAuxServer(aliveAux string) {
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
 	if val, ok := m.activeAuxServers[aliveAux]; ok && !val {
 
 		distinctNodesToRebalance := m.getDistinctNodesToRebalance(aliveAux)
@@ -359,6 +502,7 @@ func (m *Master) handleAliveAuxServer(aliveAux string) {
 				}
 
 				m.hashring.AddNode(aliveAux)
+				go m.pushRingUpdate("add", aliveAux)
 
 				m.rebalance(mappings)
 
