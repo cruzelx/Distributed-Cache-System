@@ -72,7 +72,7 @@ func NewMaster(role, standby string) *Master {
 
 	m := &Master{
 		client:           client,
-		hashring:         NewHashRing(3),
+		hashring:         NewHashRing(150),
 		requests:         masterRequests,
 		responseTime:     masterResponseTime,
 		filepath:         BackupFilePath,
