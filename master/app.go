@@ -33,6 +33,7 @@ func Start() {
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
 	r.HandleFunc("/rebalance-dead-aux", m.RebalanceDeadAuxServer).Methods("POST")
 	r.HandleFunc("/health", m.HealthHandler).Methods("GET")
+	r.HandleFunc("/role", m.RoleHandler).Methods("GET")
 	r.HandleFunc("/state", m.StateHandler).Methods("GET")
 	r.HandleFunc("/ring-update", m.RingUpdateHandler).Methods("POST")
 	r.Handle("/metrics", promhttp.Handler())
@@ -72,6 +73,16 @@ func Start() {
 		promoteChan = ch
 		go m.monitorPrimary(primaryAddr, ch, healthChan)
 		log.Printf("standby: monitoring primary at %s", primaryAddr)
+	} else if standby != "" && checkStandbyRole(m.client, standby) == "primary" {
+		// Standby has already promoted while this node was down — demote ourselves
+		// to avoid two nodes running HealthCheck simultaneously (split-brain).
+		log.Printf("standby %s is already primary; starting as standby instead", standby)
+		m.isPrimary.Store(false)
+		m.initFromPrimary(standby)
+		ch := make(chan struct{}, 1)
+		promoteChan = ch
+		go m.monitorPrimary(standby, ch, healthChan)
+		log.Printf("monitoring promoted standby at %s", standby)
 	} else {
 		servers := os.Getenv("AUX_SERVERS")
 		for _, auxServer := range strings.Split(servers, ",") {
@@ -108,6 +119,7 @@ func Start() {
 
 		case <-promoteChan:
 			promoteChan = nil // prevent double-fire
+			m.isPrimary.Store(true)
 			log.Println("promoted to primary, starting aux health checks")
 			go m.HealthCheck(time.Second*5, healthChan)
 		}

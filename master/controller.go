@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -55,6 +56,7 @@ type Master struct {
 	auxServers       []string
 	auxMu            sync.RWMutex
 	activeAuxServers map[string]bool
+	isPrimary        atomic.Bool
 	role             string // "primary" or "standby"
 	standby          string // address of standby server (primary only)
 }
@@ -68,7 +70,7 @@ func NewMaster(role, standby string) *Master {
 
 	initMetrics()
 
-	return &Master{
+	m := &Master{
 		client:           client,
 		hashring:         NewHashRing(3),
 		requests:         masterRequests,
@@ -79,6 +81,8 @@ func NewMaster(role, standby string) *Master {
 		role:             role,
 		standby:          standby,
 	}
+	m.isPrimary.Store(role == "primary")
+	return m
 }
 
 type KeyVal struct {
@@ -316,6 +320,32 @@ func (m *Master) RebalanceDeadAuxServer(w http.ResponseWriter, r *http.Request) 
 
 func (m *Master) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+func (m *Master) RoleHandler(w http.ResponseWriter, r *http.Request) {
+	role := "standby"
+	if m.isPrimary.Load() {
+		role = "primary"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"role": role})
+}
+
+// checkStandbyRole queries the standby's /role endpoint.
+// Returns "primary", "standby", or "" if unreachable.
+func checkStandbyRole(client *http.Client, standbyAddr string) string {
+	resp, err := client.Get(fmt.Sprintf("http://%s/role", standbyAddr))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	return result.Role
 }
 
 // StateHandler returns the current activeAuxServers map so the standby can mirror it.

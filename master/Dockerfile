@@ -1,5 +1,5 @@
 # Base image builder
-FROM golang:1.17-buster as builder
+FROM golang:1.23-bookworm as builder
 
 RUN mkdir -p /data
 
@@ -13,7 +13,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-linkmode external -extldflags -static" -tags netgo -o /master
+RUN CGO_ENABLED=0 GOOS=linux go build -o /master
 
 
 # Master image
