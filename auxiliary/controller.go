@@ -96,6 +96,16 @@ func (aux *Auxiliary) Mappings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(aux.LRU.GetAll())
 }
 
+func (aux *Auxiliary) Delete(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key := vars["key"]
+	if !aux.LRU.Delete(key) {
+		http.Error(w, fmt.Sprintf("key %s not found", key), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (aux *Auxiliary) Erase(w http.ResponseWriter, r *http.Request) {
 	aux.LRU.EraseCache()
 	w.WriteHeader(http.StatusOK)

@@ -171,6 +171,35 @@ func (m *Master) Get(w http.ResponseWriter, r *http.Request) {
 	m.responseTime.WithLabelValues(r.Method).Observe(elapsedTime)
 }
 
+func (m *Master) Delete(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key, ok := vars["key"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	node, err := m.hashring.GetNode(key)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://%s/data/%s", node, key), nil)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+}
+
 func (m *Master) rebalance(keyvals map[string]string) {
 	startTime := time.Now()
 

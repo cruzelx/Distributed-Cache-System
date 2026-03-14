@@ -54,6 +54,18 @@ func (lru *LRU) Put(key string, value string) {
 
 }
 
+func (lru *LRU) Delete(key string) bool {
+	lru.mu.Lock()
+	defer lru.mu.Unlock()
+	node, ok := lru.bucket[key]
+	if !ok {
+		return false
+	}
+	lru.dll.Remove(node)
+	delete(lru.bucket, key)
+	return true
+}
+
 func (lru *LRU) EraseCache() {
 	lru.mu.Lock()
 	defer lru.mu.Unlock()

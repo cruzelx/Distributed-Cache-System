@@ -47,6 +47,7 @@ func Start() {
 	// Handlers
 	r.HandleFunc("/data", aux.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", aux.Get).Methods("GET")
+	r.HandleFunc("/data/{key}", aux.Delete).Methods("DELETE")
 
 	// Send all key-val mappings
 	r.HandleFunc("/mappings", aux.Mappings).Methods("GET")
