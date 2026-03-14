@@ -482,6 +482,9 @@ func (m *Master) handleAliveAuxServer(aliveAux string) {
 
 		distinctNodesToRebalance := m.getDistinctNodesToRebalance(aliveAux)
 
+		m.hashring.AddNode(aliveAux)
+		go m.pushRingUpdate("add", aliveAux)
+
 		for _, node := range distinctNodesToRebalance {
 			go func(node string) {
 
@@ -490,6 +493,7 @@ func (m *Master) handleAliveAuxServer(aliveAux string) {
 					log.Printf("failed to get mappings from aux server %s: %v", node, err)
 					return
 				}
+				defer resp.Body.Close()
 
 				data, err := io.ReadAll(resp.Body)
 				if err != nil {
@@ -503,12 +507,7 @@ func (m *Master) handleAliveAuxServer(aliveAux string) {
 					return
 				}
 
-				m.hashring.AddNode(aliveAux)
-				go m.pushRingUpdate("add", aliveAux)
-
 				m.rebalance(mappings)
-
-				defer resp.Body.Close()
 
 			}(node)
 		}
