@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -24,7 +25,14 @@ func Start() {
 	// Path of the file that stores the cache for persistence
 	filepath := "/data/" + serverId + "-" + "data.dat"
 
-	aux := NewAuxiliary(3, filepath)
+	capacity := 128
+	if val := os.Getenv("LRU_CAPACITY"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			capacity = n
+		}
+	}
+
+	aux := NewAuxiliary(capacity, filepath)
 
 	// Check if the cache file already exists and load the data in LRU cache
 	if ok, err := aux.LRU.loadFromDisk(); !ok {

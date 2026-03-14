@@ -55,6 +55,7 @@ services:
       - PORT=3001
       - MASTER_SERVER=nginx:3000
       - ID=aux1
+      - LRU_CAPACITY=128
     ports:
       - 9001:3001
     volumes:
@@ -71,6 +72,7 @@ services:
       - PORT=3002
       - MASTER_SERVER=nginx:3000
       - ID=aux2
+      - LRU_CAPACITY=128
     ports:
       - 9002:3002
     volumes:
@@ -87,6 +89,7 @@ services:
       - PORT=3003
       - MASTER_SERVER=nginx:3000
       - ID=aux3
+      - LRU_CAPACITY=128
     ports:
       - 9003:3003
     volumes:
