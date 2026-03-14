@@ -88,6 +88,7 @@ func NewMaster(role, standby string) *Master {
 type KeyVal struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	TTL   int    `json:"ttl,omitempty"` // seconds; 0 means no expiry
 }
 
 type RingUpdate struct {

@@ -33,6 +33,7 @@ func Start() {
 	}
 
 	aux := NewAuxiliary(capacity, filepath)
+	aux.LRU.startReaper(30 * time.Second)
 
 	// Check if the cache file already exists and load the data in LRU cache
 	if ok, err := aux.LRU.loadFromDisk(); !ok {

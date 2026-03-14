@@ -23,6 +23,7 @@ type Auxiliary struct {
 type KeyVal struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	TTL   int    `json:"ttl,omitempty"` // seconds; 0 means no expiry
 }
 
 func NewAuxiliary(bucketSize int, filepath string) *Auxiliary {
@@ -62,7 +63,7 @@ func (aux *Auxiliary) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aux.LRU.Put(kv.Key, kv.Value)
+	aux.LRU.Put(kv.Key, kv.Value, kv.TTL)
 
 	elapsedTime := time.Since(startTime).Seconds()
 	aux.requests.WithLabelValues(r.Method).Inc()
