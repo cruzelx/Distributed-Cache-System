@@ -82,8 +82,8 @@ func NewMaster(role, standby string) *Master {
 }
 
 type KeyVal struct {
-	Key   string `json:key`
-	Value string `json:value`
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 type RingUpdate struct {
