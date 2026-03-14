@@ -1,20 +1,33 @@
 version: "3"
 
 services:
-  master: 
-    build: 
+  master:
+    build:
       context: "./master"
-    scale: 3
-    # ports:
-    #   - 8000:8000
     depends_on:
-      - zoo
       - aux1
       - aux2
       - aux3
     environment:
+      - ROLE=primary
+      - STANDBY_SERVER=master-standby:8000
       - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
-      - ZOO_SERVERS=zoo:2181
+      - PORT=8000
+    volumes:
+      - ./master:/app
+      - ./data:/data
+    networks:
+      - cache-network
+
+  master-standby:
+    build:
+      context: "./master"
+    depends_on:
+      - master
+    environment:
+      - ROLE=standby
+      - PRIMARY_MASTER=master:8000
+      - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
       - PORT=8000
     volumes:
       - ./master:/app
@@ -26,13 +39,13 @@ services:
     image: "nginx"
     depends_on:
       - master
+      - master-standby
     ports:
       - 8080:3000
     volumes:
       - ./nginx/conf.d:/etc/nginx/
     networks:
       - cache-network
-  
 
   aux1:
     build:
@@ -40,19 +53,17 @@ services:
     restart: unless-stopped
     environment:
       - PORT=3001
-      - MASTER_SERVER=master:8000
+      - MASTER_SERVER=nginx:3000
       - ID=aux1
-      - ZOO_SERVERS=zoo:2181
     ports:
       - 9001:3001
     depends_on:
-      - zoo
+      - nginx
     volumes:
       - ./auxiliary:/app
       - ./data:/data
     networks:
       - cache-network
- 
 
   aux2:
     build:
@@ -60,19 +71,17 @@ services:
     restart: unless-stopped
     environment:
       - PORT=3002
-      - MASTER_SERVER=master:8000
+      - MASTER_SERVER=nginx:3000
       - ID=aux2
-      - ZOO_SERVERS=zoo:2181
     ports:
       - 9002:3002
     depends_on:
-      - zoo
+      - nginx
     volumes:
       - ./auxiliary:/app
       - ./data:/data
     networks:
       - cache-network
-
 
   aux3:
     build:
@@ -80,38 +89,19 @@ services:
     restart: unless-stopped
     environment:
       - PORT=3003
-      - MASTER_SERVER=master:8000
+      - MASTER_SERVER=nginx:3000
       - ID=aux3
-      - ZOO_SERVERS=zoo:2181
     ports:
       - 9003:3003
     depends_on:
-      - zoo
+      - nginx
     volumes:
       - ./auxiliary:/app
       - ./data:/data
     networks:
       - cache-network
 
-# Cluster Management
-
-  zoo:
-    image: zookeeper
-    restart: always
-    ports:
-      - 2181:2181
-      - 2888:2888
-      - 3888:3888
-    networks:
-      - cache-network
-    volumes:
-      - ./zookeeper/zoo.cfg:/conf/zoo.cfg
-      - ./data/zookeeper:/data
-    environment:
-      - ZOO_MY_ID=1
-      - ZOO_SERVERS=server.1=zoo:2888:3888;2181
-
-# Metrics
+  # Metrics
   prometheus:
     image: prom/prometheus
     ports:

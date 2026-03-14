@@ -17,30 +17,24 @@ import (
 )
 
 func Start() {
-	// get aux server host and port from env
-	servers := os.Getenv("AUX_SERVERS")
-	auxServers := strings.Split(servers, ",")
-
-	m := NewMaster()
-	// add env aux host:port to hashring
-	for _, auxServer := range auxServers {
-		m.hashring.AddNode(auxServer)
+	role := os.Getenv("ROLE")
+	if role == "" {
+		role = "primary"
 	}
+	standby := os.Getenv("STANDBY_SERVER")
+	primaryAddr := os.Getenv("PRIMARY_MASTER")
 
-	// Restore and rebalance if backup file exists
-	go m.RestoreCacheFromDisk()
+	m := NewMaster(role, standby)
 
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
-	// Handlers
 	r.HandleFunc("/data", m.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
-
-	// Rebalance when a aux server is shutting down
 	r.HandleFunc("/rebalance-dead-aux", m.RebalanceDeadAuxServer).Methods("POST")
-
-	// Instrumentation
+	r.HandleFunc("/health", m.HealthHandler).Methods("GET")
+	r.HandleFunc("/state", m.StateHandler).Methods("GET")
+	r.HandleFunc("/ring-update", m.RingUpdateHandler).Methods("POST")
 	r.Handle("/metrics", promhttp.Handler())
 
 	loggedHandler := handlers.LoggingHandler(os.Stdout, r)
@@ -62,14 +56,30 @@ func Start() {
 		}
 	}()
 
-	// Listen to termination signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	log.Printf("Server is listening on the port %s\n", port)
+	log.Printf("Server is listening on port %s (role: %s)\n", port, role)
 
 	healthChan := make(chan interface{})
-	go m.HealthCheck(time.Second*5, healthChan)
+
+	// promoteChan is non-nil only for standby; a nil channel never fires in select.
+	var promoteChan <-chan struct{}
+
+	if role == "standby" {
+		m.initFromPrimary(primaryAddr)
+		ch := make(chan struct{}, 1)
+		promoteChan = ch
+		go m.monitorPrimary(primaryAddr, ch, healthChan)
+		log.Printf("standby: monitoring primary at %s", primaryAddr)
+	} else {
+		servers := os.Getenv("AUX_SERVERS")
+		for _, auxServer := range strings.Split(servers, ",") {
+			m.hashring.AddNode(auxServer)
+		}
+		go m.RestoreCacheFromDisk()
+		go m.HealthCheck(time.Second*5, healthChan)
+	}
 
 	defer func() {
 		close(errChan)
@@ -77,22 +87,29 @@ func Start() {
 		close(healthChan)
 	}()
 
-	select {
-	case err := <-errChan:
-		log.Printf("error: %s\n", err.Error())
-		healthChan <- struct{}{}
+	for {
+		select {
+		case err := <-errChan:
+			log.Printf("error: %s\n", err.Error())
+			healthChan <- struct{}{}
+			return
 
-	case <-sigChan:
-		log.Println("shutting down...")
+		case <-sigChan:
+			log.Println("shutting down...")
+			healthChan <- struct{}{}
 
-		healthChan <- struct{}{}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+			defer cancel()
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
+			if err := srv.Shutdown(ctx); err != nil {
+				log.Printf("error: %s\n", err)
+			}
+			return
 
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("error: %s\n", err)
+		case <-promoteChan:
+			promoteChan = nil // prevent double-fire
+			log.Println("promoted to primary, starting aux health checks")
+			go m.HealthCheck(time.Second*5, healthChan)
 		}
 	}
-
 }
