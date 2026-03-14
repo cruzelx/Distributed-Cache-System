@@ -50,6 +50,10 @@ func Start() {
 	r.HandleFunc("/data/{key}", aux.Get).Methods("GET")
 	r.HandleFunc("/data/{key}", aux.Delete).Methods("DELETE")
 
+	// Bulk operations
+	r.HandleFunc("/bulk", aux.BulkPut).Methods("POST")
+	r.HandleFunc("/bulk/get", aux.BulkGet).Methods("POST")
+
 	// Send all key-val mappings
 	r.HandleFunc("/mappings", aux.Mappings).Methods("GET")
 

@@ -201,6 +201,114 @@ func (m *Master) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 }
 
+func (m *Master) BulkPut(w http.ResponseWriter, r *http.Request) {
+	var entries []KeyVal
+	if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	// Group entries by their target aux node.
+	groups := make(map[string][]KeyVal)
+	for _, kv := range entries {
+		node, err := m.hashring.GetNode(kv.Key)
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		groups[node] = append(groups[node], kv)
+	}
+
+	// Fan out to each node in parallel.
+	errs := make(chan error, len(groups))
+	for node, batch := range groups {
+		go func(node string, batch []KeyVal) {
+			body, err := json.Marshal(batch)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp, err := m.client.Post(fmt.Sprintf("http://%s/bulk", node), "application/json", bytes.NewBuffer(body))
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+			errs <- nil
+		}(node, batch)
+	}
+
+	for range groups {
+		if err := <-errs; err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (m *Master) BulkGet(w http.ResponseWriter, r *http.Request) {
+	var keys []string
+	if err := json.NewDecoder(r.Body).Decode(&keys); err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	// Group keys by their target aux node.
+	groups := make(map[string][]string)
+	for _, key := range keys {
+		node, err := m.hashring.GetNode(key)
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		groups[node] = append(groups[node], key)
+	}
+
+	type result struct {
+		data map[string]string
+		err  error
+	}
+	results := make(chan result, len(groups))
+
+	for node, batch := range groups {
+		go func(node string, batch []string) {
+			body, err := json.Marshal(batch)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			resp, err := m.client.Post(fmt.Sprintf("http://%s/bulk/get", node), "application/json", bytes.NewBuffer(body))
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			var found map[string]string
+			if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
+				results <- result{err: err}
+				return
+			}
+			results <- result{data: found}
+		}(node, batch)
+	}
+
+	merged := make(map[string]string, len(keys))
+	for range groups {
+		res := <-results
+		if res.err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		for k, v := range res.data {
+			merged[k] = v
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(merged)
+}
+
 func (m *Master) rebalance(keyvals map[string]string) {
 	startTime := time.Now()
 

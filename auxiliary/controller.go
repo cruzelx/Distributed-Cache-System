@@ -107,6 +107,34 @@ func (aux *Auxiliary) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (aux *Auxiliary) BulkPut(w http.ResponseWriter, r *http.Request) {
+	var entries []KeyVal
+	if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	for _, kv := range entries {
+		aux.LRU.Put(kv.Key, kv.Value, kv.TTL)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (aux *Auxiliary) BulkGet(w http.ResponseWriter, r *http.Request) {
+	var keys []string
+	if err := json.NewDecoder(r.Body).Decode(&keys); err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	result := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if val, err := aux.LRU.Get(key); err == nil {
+			result[key] = val
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 func (aux *Auxiliary) Erase(w http.ResponseWriter, r *http.Request) {
 	aux.LRU.EraseCache()
 	w.WriteHeader(http.StatusOK)

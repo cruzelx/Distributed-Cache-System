@@ -29,6 +29,8 @@ func Start() {
 	r := mux.NewRouter()
 	r.Use(mux.CORSMethodMiddleware(r))
 
+	r.HandleFunc("/data/bulk", m.BulkPut).Methods("POST")
+	r.HandleFunc("/data/bulk/get", m.BulkGet).Methods("POST")
 	r.HandleFunc("/data", m.Put).Methods("POST")
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
 	r.HandleFunc("/data/{key}", m.Delete).Methods("DELETE")
