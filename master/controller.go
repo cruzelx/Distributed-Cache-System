@@ -296,9 +296,11 @@ func (m *Master) RebalanceDeadAuxServer(w http.ResponseWriter, r *http.Request) 
 	}
 
 	log.Printf("Remapping %d keys from server %s", len(auxMappings), auxServer)
-	// Broadcast aux node to be removed
 	m.hashring.RemoveNode(auxServer)
-	// rebalance all key-vals to the live aux servers
+	m.auxMu.Lock()
+	m.activeAuxServers[auxServer] = false
+	m.auxMu.Unlock()
+	go m.pushRingUpdate("remove", auxServer)
 	m.rebalance(auxMappings)
 
 	// Save to backup cache file while remapping
