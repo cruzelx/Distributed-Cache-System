@@ -520,6 +520,9 @@ func (m *Master) handleAliveAuxServer(aliveAux string) {
 func (m *Master) HealthCheck(duration time.Duration, stop <-chan interface{}) {
 	log.Printf("checking health of aux servers... %v", m.auxServers)
 
+	done := make(chan struct{})
+	defer close(done)
+
 	deadAuxChan := make(chan string)
 	aliveAuxChan := make(chan string)
 
@@ -529,29 +532,31 @@ func (m *Master) HealthCheck(duration time.Duration, stop <-chan interface{}) {
 
 			for {
 				select {
-				case <-stop:
+				case <-done:
 					return
-
 				default:
-					if !m.checkAuxServerHealth(aux) {
-						deadAuxChan <- aux
-					} else {
-						aliveAuxChan <- aux
-					}
-					time.Sleep(duration)
 				}
+
+				if !m.checkAuxServerHealth(aux) {
+					select {
+					case deadAuxChan <- aux:
+					case <-done:
+						return
+					}
+				} else {
+					select {
+					case aliveAuxChan <- aux:
+					case <-done:
+						return
+					}
+				}
+
+				time.Sleep(duration)
 			}
 		}(aux)
 	}
 
-	defer func() {
-		log.Printf("Exiting from health check...")
-		close(deadAuxChan)
-		close(aliveAuxChan)
-	}()
-
 	for {
-
 		select {
 		case deadAux := <-deadAuxChan:
 			m.handleDeadAuxServer(deadAux)
@@ -564,5 +569,4 @@ func (m *Master) HealthCheck(duration time.Duration, stop <-chan interface{}) {
 			return
 		}
 	}
-
 }
