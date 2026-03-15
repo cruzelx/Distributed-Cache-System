@@ -9,8 +9,9 @@
 #   make connect     — configure kubectl to talk to the EKS cluster
 #   make build-push  — build Docker images and push to ECR
 #   make deploy      — apply all Kubernetes manifests (in dependency order)
-#   make destroy     — tear down all infrastructure (prompts for confirmation)
-#   make help        — print this message
+#   make destroy          — tear down all infrastructure (prompts for confirmation)
+#   make destroy-bootstrap — empty S3 state bucket and destroy bootstrap resources
+#   make help             — print this message
 # ==============================================================================
 
 # Resolve ECR URLs from Terraform outputs at recipe evaluation time.
@@ -29,7 +30,7 @@ TAG             ?= latest
 REPO_ROOT       := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 K8S_DIR         := $(REPO_ROOT)/k8s
 
-.PHONY: bootstrap init plan apply connect build-push deploy destroy help
+.PHONY: bootstrap init plan apply connect build-push deploy destroy destroy-bootstrap help
 
 # ------------------------------------------------------------------------------
 # bootstrap
@@ -163,6 +164,40 @@ destroy:
 	terraform destroy
 
 # ------------------------------------------------------------------------------
+# destroy-bootstrap
+# Tears down the S3 state bucket and DynamoDB lock table created by `make bootstrap`.
+# Run AFTER `make destroy` has completed — the state files must be gone first.
+# Removes prevent_destroy guards, empties all S3 object versions, then destroys.
+# ------------------------------------------------------------------------------
+destroy-bootstrap:
+	@BUCKET=$$(cd $(REPO_ROOT)/bootstrap && terraform output -raw state_bucket_name 2>/dev/null); \
+	if [ -z "$$BUCKET" ]; then \
+	  echo "ERROR: Could not read state_bucket_name from bootstrap Terraform output."; \
+	  echo "       Run from infrastructure/ after make bootstrap has been applied."; \
+	  exit 1; \
+	fi; \
+	echo "WARNING: This will permanently delete the Terraform state bucket ($$BUCKET) and lock table."; \
+	read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || (echo "Aborted."; exit 1); \
+	echo "==> Emptying S3 bucket $$BUCKET (all versions)..."; \
+	VERSIONS=$$(aws s3api list-object-versions --bucket $$BUCKET --region $(AWS_REGION) \
+	  --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null); \
+	if echo "$$VERSIONS" | grep -q '"Key"'; then \
+	  aws s3api delete-objects --bucket $$BUCKET --region $(AWS_REGION) --delete "$$VERSIONS" > /dev/null; \
+	fi; \
+	MARKERS=$$(aws s3api list-object-versions --bucket $$BUCKET --region $(AWS_REGION) \
+	  --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null); \
+	if echo "$$MARKERS" | grep -q '"Key"'; then \
+	  aws s3api delete-objects --bucket $$BUCKET --region $(AWS_REGION) --delete "$$MARKERS" > /dev/null; \
+	fi; \
+	echo "==> Removing prevent_destroy guards..."; \
+	sed -i.bak '/prevent_destroy/d' $(REPO_ROOT)/bootstrap/main.tf && \
+	  sed -i.bak '/lifecycle {/{ N; /lifecycle {[[:space:]]*}/d; }' $(REPO_ROOT)/bootstrap/main.tf; \
+	rm -f $(REPO_ROOT)/bootstrap/main.tf.bak; \
+	echo "==> Destroying bootstrap resources..."; \
+	cd $(REPO_ROOT)/bootstrap && terraform destroy -auto-approve; \
+	echo "==> Bootstrap teardown complete."
+
+# ------------------------------------------------------------------------------
 # help
 # ------------------------------------------------------------------------------
 help:
@@ -176,8 +211,9 @@ help:
 	@echo "  connect     Configure kubectl for the EKS cluster"
 	@echo "  build-push  Build + push Docker images to ECR"
 	@echo "  deploy      Apply all Kubernetes manifests in order"
-	@echo "  destroy     Tear down all infrastructure (irreversible)"
-	@echo "  help        Show this message"
+	@echo "  destroy           Tear down all infrastructure (irreversible)"
+	@echo "  destroy-bootstrap Empty S3 state bucket and destroy bootstrap resources"
+	@echo "  help              Show this message"
 	@echo ""
 	@echo "Typical first-run workflow:"
 	@echo "  1. make bootstrap"
