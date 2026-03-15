@@ -64,9 +64,9 @@ func TestDLL_Remove(t *testing.T) {
 func TestLRU_Get(t *testing.T) {
 	lru := NewLRU(3, "")
 
-	lru.Put("Name", "Alex")
-	lru.Put("Age", "25")
-	lru.Put("Country", "NP")
+	lru.Put("Name", "Alex", 0)
+	lru.Put("Age", "25", 0)
+	lru.Put("Country", "NP", 0)
 
 	val, err := lru.Get("Age")
 	if err != nil {
@@ -102,9 +102,9 @@ func TestLRU_Get(t *testing.T) {
 func TestLRU_Put(t *testing.T) {
 	lru := NewLRU(3, "")
 
-	lru.Put("Name", "Alex")
-	lru.Put("Age", "25")
-	lru.Put("Country", "NP")
+	lru.Put("Name", "Alex", 0)
+	lru.Put("Age", "25", 0)
+	lru.Put("Country", "NP", 0)
 
 	val1, err1 := lru.Get("Name")
 	val2, err2 := lru.Get("Age")
@@ -117,7 +117,7 @@ func TestLRU_Put(t *testing.T) {
 		t.Errorf("Unexpected values for the keys: wanted %s,%s,%s; got %s,%s,%s", "Alex", "25", "NP", val1, val2, val3)
 	}
 
-	lru.Put("Wallet", "Bitcoin")
+	lru.Put("Wallet", "Bitcoin", 0)
 
 	_, err := lru.Get("Name")
 	if err == nil {
@@ -141,9 +141,9 @@ func TestLRU_SaveAndLoadFromDisk(t *testing.T) {
 
 	lru := NewLRU(3, filepath)
 
-	lru.Put("Name", "Alex")
-	lru.Put("Age", "25")
-	lru.Put("Country", "NP")
+	lru.Put("Name", "Alex", 0)
+	lru.Put("Age", "25", 0)
+	lru.Put("Country", "NP", 0)
 
 	if ok, err := lru.saveToDisk(); !ok {
 		t.Errorf("Failed to save to disk: err %v", err)
@@ -174,13 +174,13 @@ func Benchmark_LRUPut(b *testing.B) {
 	lru := NewLRU(3, "")
 
 	for i := 0; i < b.N; i++ {
-		lru.Put("Alex", "Name")
+		lru.Put("Alex", "Name", 0)
 	}
 }
 
 func Benchmark_LRUGet(b *testing.B) {
 	lru := NewLRU(3, "")
-	lru.Put("Alex", "Name")
+	lru.Put("Alex", "Name", 0)
 
 	for i := 0; i < b.N; i++ {
 		lru.Get("Alex")

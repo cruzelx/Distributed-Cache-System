@@ -7,13 +7,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// 
 type Auxiliary struct {
 	LRU          *LRU
 	requests     *prometheus.CounterVec
@@ -26,31 +26,36 @@ type KeyVal struct {
 	TTL   int    `json:"ttl,omitempty"` // seconds; 0 means no expiry
 }
 
+var (
+	auxMetricsOnce     sync.Once
+	auxRequests        *prometheus.CounterVec
+	auxResponseTime    *prometheus.HistogramVec
+)
+
 func NewAuxiliary(bucketSize int, filepath string) *Auxiliary {
-	requests := prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "auxiliary_request_total",
-			Help: "Total number of requests to the auxiliary node",
-		}, []string{"method"},
-	)
-
-	responseTime := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "auxiliary_response_time_seconds",
-			Help:    "Distribution of the response time processed by the auxiliary server",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
-		},
-		[]string{"method"},
-	)
-
-	prometheus.MustRegister(requests, responseTime)
+	auxMetricsOnce.Do(func() {
+		auxRequests = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "auxiliary_request_total",
+				Help: "Total number of requests to the auxiliary node",
+			}, []string{"method"},
+		)
+		auxResponseTime = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "auxiliary_response_time_seconds",
+				Help:    "Distribution of the response time processed by the auxiliary server",
+				Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+			},
+			[]string{"method"},
+		)
+		prometheus.MustRegister(auxRequests, auxResponseTime)
+	})
 
 	return &Auxiliary{
 		LRU:          NewLRU(bucketSize, filepath),
-		requests:     requests,
-		responseTime: responseTime,
+		requests:     auxRequests,
+		responseTime: auxResponseTime,
 	}
-
 }
 
 func (aux *Auxiliary) Put(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +159,7 @@ func (aux *Auxiliary) SendMappings() {
 
 	log.Println("sending mappings to master server...")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	masterServer := os.Getenv("MASTER_SERVER")
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://%s/rebalance-dead-aux", masterServer), bytes.NewBuffer(postBody))
 	if err != nil {

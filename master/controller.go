@@ -203,6 +203,9 @@ func (m *Master) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	elapsedTime := time.Since(startTime).Seconds()
+	m.requests.WithLabelValues(r.Method).Inc()
+	m.responseTime.WithLabelValues(r.Method).Observe(elapsedTime)
 	http.Error(w, fmt.Sprintf("key %s not found", key), http.StatusNotFound)
 }
 
@@ -381,93 +384,67 @@ func (m *Master) BulkGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Master) rebalance(keyvals map[string]string) {
+	if len(keyvals) == 0 {
+		return
+	}
+
 	startTime := time.Now()
 
-	keyvalChan := make(chan KeyVal)
-
-	var wg sync.WaitGroup
 	numOfWorkers := 16
-
-	if len(keyvals) < 16 {
+	if len(keyvals) < numOfWorkers {
 		numOfWorkers = len(keyvals)
 	}
 
-	log.Printf("number of workers used for remapping: %d", numOfWorkers)
+	log.Printf("rebalancing %d keys with %d workers", len(keyvals), numOfWorkers)
+
+	keyvalChan := make(chan KeyVal)
+	var wg sync.WaitGroup
 
 	for i := 0; i < numOfWorkers; i++ {
 		wg.Add(1)
-
-		go func(workID int) {
+		go func() {
 			defer wg.Done()
-
 			for keyval := range keyvalChan {
 				nodes, err := m.hashring.GetNodes(keyval.Key, m.replicationFactor)
 				if err != nil {
 					log.Printf("failed to remap key %s: %v", keyval.Key, err)
 					continue
 				}
-
 				postBody, err := json.Marshal(keyval)
 				if err != nil {
-					log.Printf("failed to parse key-value pair: %v \n", err)
+					log.Printf("failed to marshal key-value pair: %v", err)
 					continue
 				}
-
 				for _, node := range nodes {
 					resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
 					if err != nil {
-						log.Printf("failed to send key-value pair to aux server %s", node)
+						log.Printf("failed to send key %s to aux server %s: %v", keyval.Key, node, err)
 						continue
 					}
 					resp.Body.Close()
 				}
 			}
-		}(i)
+		}()
 	}
 
 	for k, v := range keyvals {
 		keyvalChan <- KeyVal{Key: k, Value: v}
 	}
-
 	close(keyvalChan)
 	wg.Wait()
 
-	elapsedTime := time.Since(startTime).Seconds()
-	log.Printf("mapped keys in %v sec(s)\n", elapsedTime)
+	log.Printf("rebalanced %d keys in %.3fs", len(keyvals), time.Since(startTime).Seconds())
 }
 
 func (m *Master) backupCacheToDisk(keyvals map[string]string) error {
-	_, err := os.Stat(m.filepath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			file, err := os.Create(m.filepath)
-			if err != nil {
-				return fmt.Errorf("failed to create backup file: %v", err)
-			}
-			defer file.Close()
-
-			encode := gob.NewEncoder(file)
-			if err := encode.Encode(keyvals); err != nil {
-				return fmt.Errorf("failed to encode key-val pairs to file %s: %v", m.filepath, err)
-
-			}
-			log.Printf("saved mappings to backup file %s", m.filepath)
-			return nil
-		}
-		return fmt.Errorf("error reading stats of file %s: %v", m.filepath, err)
-	}
-
 	file, err := os.OpenFile(m.filepath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
-		return fmt.Errorf("failed to open file %s: %v", m.filepath, err)
-
+		return fmt.Errorf("failed to open backup file %s: %v", m.filepath, err)
 	}
 	defer file.Close()
 
-	encode := gob.NewEncoder(file)
-	if err := encode.Encode(&keyvals); err != nil {
-		return fmt.Errorf("failed to decode key-val pairs to file %s: %v", m.filepath, err)
-
+	if err := gob.NewEncoder(file).Encode(keyvals); err != nil {
+		return fmt.Errorf("failed to encode cache to %s: %v", m.filepath, err)
 	}
 	log.Printf("saved mappings to backup file %s", m.filepath)
 	return nil
@@ -511,21 +488,19 @@ func (m *Master) RebalanceDeadAuxServer(w http.ResponseWriter, r *http.Request) 
 	}
 
 	log.Printf("Remapping %d keys from server %s", len(auxMappings), auxServer)
-	m.hashring.RemoveNode(auxServer)
 	m.auxMu.Lock()
 	m.activeAuxServers[auxServer] = false
+	m.hashring.RemoveNode(auxServer)
 	m.auxMu.Unlock()
 	go m.pushRingUpdate("remove", auxServer)
 	m.rebalance(auxMappings)
 
-	// Save to backup cache file while remapping
-	// This helps in spinning up
-	go func(filepath string, mappings map[string]string) {
+	// Persist the redistributed mappings so they survive a full restart.
+	go func() {
 		if err := m.backupCacheToDisk(auxMappings); err != nil {
 			log.Println(err)
-			return
 		}
-	}(m.filepath, auxMappings)
+	}()
 
 }
 

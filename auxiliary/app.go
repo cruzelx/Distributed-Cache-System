@@ -85,23 +85,30 @@ func Start() {
 
 	log.Println("aux is listening on the port ", port)
 
-	// Save cache to disk every 10 sec for persistent storage
-	go func() {
-		for {
-			time.Sleep(time.Second * 10)
-			log.Println("saving cache to disk...")
-
-			if ok, err := aux.LRU.saveToDisk(); !ok {
-				log.Printf("failed saving cache to disk: %s\n", err.Error())
-			}
-		}
-	}()
-
 	// Listen to termination signals
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
+	// Save cache to disk every 10s; stops when shutdown is signalled.
+	stopSaver := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				log.Println("saving cache to disk...")
+				if ok, err := aux.LRU.saveToDisk(); !ok {
+					log.Printf("failed saving cache to disk: %s\n", err.Error())
+				}
+			case <-stopSaver:
+				return
+			}
+		}
+	}()
+
 	defer func() {
+		close(stopSaver)
 		close(errChan)
 		close(shutdown)
 	}()
