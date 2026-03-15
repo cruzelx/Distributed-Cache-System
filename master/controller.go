@@ -66,6 +66,9 @@ type Master struct {
 	deadAuxChan  chan string
 	aliveAuxChan chan string
 	healthDone   chan struct{}
+
+	// replicaSem limits total concurrent outgoing writes to aux nodes.
+	replicaSem chan struct{}
 }
 
 func NewMaster(role, standby string) *Master {
@@ -95,6 +98,7 @@ func NewMaster(role, standby string) *Master {
 		role:              role,
 		standby:           standby,
 		replicationFactor: rf,
+		replicaSem:        make(chan struct{}, 64),
 	}
 	m.isPrimary.Store(role == "primary")
 	return m
@@ -136,6 +140,8 @@ func (m *Master) Put(w http.ResponseWriter, r *http.Request) {
 	errs := make(chan error, len(nodes))
 	for _, node := range nodes {
 		go func(node string) {
+			m.replicaSem <- struct{}{}
+			defer func() { <-m.replicaSem }()
 			resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
 			if err != nil {
 				errs <- err
@@ -271,6 +277,8 @@ func (m *Master) BulkPut(w http.ResponseWriter, r *http.Request) {
 	errs := make(chan error, len(groups))
 	for node, batch := range groups {
 		go func(node string, batch []KeyVal) {
+			m.replicaSem <- struct{}{}
+			defer func() { <-m.replicaSem }()
 			body, err := json.Marshal(batch)
 			if err != nil {
 				errs <- err

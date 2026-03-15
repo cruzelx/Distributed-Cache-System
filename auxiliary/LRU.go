@@ -3,112 +3,174 @@ package main
 import (
 	"encoding/gob"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"sync"
 	"time"
 )
 
+const numShards = 16
+
 type diskSnapshot struct {
 	Data   map[string]string
 	Expiry map[string]time.Time
 }
 
-type LRU struct {
-	mu       sync.RWMutex
+// lruShard is one independently-locked segment of the cache.
+type lruShard struct {
+	mu       sync.Mutex
 	capacity int
 	bucket   map[string]*Node
 	dll      *DLL
-	filepath string
 	expiry   map[string]time.Time
 }
 
+type LRU struct {
+	shards   [numShards]lruShard
+	filepath string
+}
+
 func NewLRU(capacity int, filepath string) *LRU {
-	return &LRU{
-		capacity: capacity,
-		bucket:   make(map[string]*Node, capacity),
-		dll:      NewDLL(),
-		filepath: filepath,
-		expiry:   make(map[string]time.Time),
+	// Ceiling division so total capacity >= requested.
+	shardCap := (capacity + numShards - 1) / numShards
+	if shardCap < 1 {
+		shardCap = 1
 	}
+	lru := &LRU{filepath: filepath}
+	for i := range lru.shards {
+		lru.shards[i] = lruShard{
+			capacity: shardCap,
+			bucket:   make(map[string]*Node, shardCap),
+			dll:      NewDLL(),
+			expiry:   make(map[string]time.Time),
+		}
+	}
+	return lru
+}
+
+func shardIndex(key string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return h.Sum32() % numShards
+}
+
+func (lru *LRU) shardFor(key string) *lruShard {
+	return &lru.shards[shardIndex(key)]
 }
 
 func (lru *LRU) Get(key string) (string, error) {
-	lru.mu.Lock()
-	defer lru.mu.Unlock()
-	node, ok := lru.bucket[key]
+	s := lru.shardFor(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.bucket[key]
 	if !ok {
 		return "", fmt.Errorf("value for the key %s not found", key)
 	}
-	if exp, hasExp := lru.expiry[key]; hasExp && time.Now().After(exp) {
-		lru.dll.Remove(node)
-		delete(lru.bucket, key)
-		delete(lru.expiry, key)
+	if exp, hasExp := s.expiry[key]; hasExp && time.Now().After(exp) {
+		s.dll.Remove(node)
+		delete(s.bucket, key)
+		delete(s.expiry, key)
 		return "", fmt.Errorf("value for the key %s not found", key)
 	}
-	lru.dll.Remove(node)
-	lru.dll.Prepend(node)
+	s.dll.Remove(node)
+	s.dll.Prepend(node)
 	return node.Value, nil
 }
 
-// Put inserts or updates a key. ttlSecs > 0 sets an expiry; 0 means no expiry.
 func (lru *LRU) Put(key, value string, ttlSecs int) {
-	lru.mu.Lock()
-	defer lru.mu.Unlock()
-	if node, ok := lru.bucket[key]; ok {
+	s := lru.shardFor(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.putLocked(key, value, ttlSecs)
+}
+
+// putLocked inserts or updates a key. Caller must hold s.mu.
+func (s *lruShard) putLocked(key, value string, ttlSecs int) {
+	if node, ok := s.bucket[key]; ok {
 		node.Value = value
-		lru.dll.Remove(node)
-		lru.dll.Prepend(node)
+		s.dll.Remove(node)
+		s.dll.Prepend(node)
 	} else {
-		if len(lru.bucket) >= lru.capacity {
-			tail := lru.dll.Tail
-			delete(lru.bucket, tail.Key)
-			delete(lru.expiry, tail.Key)
-			lru.dll.Remove(tail)
+		if len(s.bucket) >= s.capacity {
+			tail := s.dll.Tail
+			delete(s.bucket, tail.Key)
+			delete(s.expiry, tail.Key)
+			s.dll.Remove(tail)
 		}
 		newNode := &Node{Key: key, Value: value}
-		lru.bucket[key] = newNode
-		lru.dll.Prepend(newNode)
+		s.bucket[key] = newNode
+		s.dll.Prepend(newNode)
 	}
 	if ttlSecs > 0 {
-		lru.expiry[key] = time.Now().Add(time.Duration(ttlSecs) * time.Second)
+		s.expiry[key] = time.Now().Add(time.Duration(ttlSecs) * time.Second)
 	} else {
-		delete(lru.expiry, key)
+		delete(s.expiry, key)
+	}
+}
+
+// BulkPut groups entries by shard so each shard lock is acquired once.
+func (lru *LRU) BulkPut(entries []KeyVal) {
+	type kv struct {
+		key, val string
+		ttl      int
+	}
+	var groups [numShards][]kv
+	for _, e := range entries {
+		idx := shardIndex(e.Key)
+		groups[idx] = append(groups[idx], kv{e.Key, e.Value, e.TTL})
+	}
+	for i := range lru.shards {
+		if len(groups[i]) == 0 {
+			continue
+		}
+		s := &lru.shards[i]
+		s.mu.Lock()
+		for _, e := range groups[i] {
+			s.putLocked(e.key, e.val, e.ttl)
+		}
+		s.mu.Unlock()
 	}
 }
 
 func (lru *LRU) Delete(key string) bool {
-	lru.mu.Lock()
-	defer lru.mu.Unlock()
-	node, ok := lru.bucket[key]
+	s := lru.shardFor(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.bucket[key]
 	if !ok {
 		return false
 	}
-	lru.dll.Remove(node)
-	delete(lru.bucket, key)
-	delete(lru.expiry, key)
+	s.dll.Remove(node)
+	delete(s.bucket, key)
+	delete(s.expiry, key)
 	return true
 }
 
 func (lru *LRU) EraseCache() {
-	lru.mu.Lock()
-	defer lru.mu.Unlock()
-	lru.dll = NewDLL()
-	lru.bucket = make(map[string]*Node, lru.capacity)
-	lru.expiry = make(map[string]time.Time)
+	for i := range lru.shards {
+		s := &lru.shards[i]
+		s.mu.Lock()
+		s.dll = NewDLL()
+		s.bucket = make(map[string]*Node, s.capacity)
+		s.expiry = make(map[string]time.Time)
+		s.mu.Unlock()
+	}
 }
 
 func (lru *LRU) GetAll() map[string]string {
-	lru.mu.RLock()
-	defer lru.mu.RUnlock()
+	result := make(map[string]string)
 	now := time.Now()
-	result := make(map[string]string, len(lru.bucket))
-	curr := lru.dll.Head
-	for curr != nil {
-		if exp, hasExp := lru.expiry[curr.Key]; !hasExp || now.Before(exp) {
-			result[curr.Key] = curr.Value
+	for i := range lru.shards {
+		s := &lru.shards[i]
+		s.mu.Lock()
+		for curr := s.dll.Head; curr != nil; curr = curr.Next {
+			if exp, hasExp := s.expiry[curr.Key]; !hasExp || now.Before(exp) {
+				result[curr.Key] = curr.Value
+			}
 		}
-		curr = curr.Next
+		s.mu.Unlock()
 	}
 	return result
 }
@@ -125,35 +187,40 @@ func (lru *LRU) startReaper(interval time.Duration) {
 }
 
 func (lru *LRU) reapExpired() {
-	lru.mu.Lock()
-	defer lru.mu.Unlock()
 	now := time.Now()
-	for key, exp := range lru.expiry {
-		if now.After(exp) {
-			if node, ok := lru.bucket[key]; ok {
-				lru.dll.Remove(node)
-				delete(lru.bucket, key)
+	for i := range lru.shards {
+		s := &lru.shards[i]
+		s.mu.Lock()
+		for key, exp := range s.expiry {
+			if now.After(exp) {
+				if node, ok := s.bucket[key]; ok {
+					s.dll.Remove(node)
+					delete(s.bucket, key)
+				}
+				delete(s.expiry, key)
 			}
-			delete(lru.expiry, key)
 		}
+		s.mu.Unlock()
 	}
 }
 
 func (lru *LRU) saveToDisk() (bool, error) {
-	lru.mu.RLock()
 	snap := diskSnapshot{
-		Data:   make(map[string]string, len(lru.bucket)),
-		Expiry: make(map[string]time.Time, len(lru.expiry)),
+		Data:   make(map[string]string),
+		Expiry: make(map[string]time.Time),
 	}
-	curr := lru.dll.Head
-	for curr != nil {
-		snap.Data[curr.Key] = curr.Value
-		curr = curr.Next
+
+	for i := range lru.shards {
+		s := &lru.shards[i]
+		s.mu.Lock()
+		for curr := s.dll.Head; curr != nil; curr = curr.Next {
+			snap.Data[curr.Key] = curr.Value
+		}
+		for k, v := range s.expiry {
+			snap.Expiry[k] = v
+		}
+		s.mu.Unlock()
 	}
-	for k, v := range lru.expiry {
-		snap.Expiry[k] = v
-	}
-	lru.mu.RUnlock()
 
 	if len(snap.Data) == 0 {
 		return true, nil
@@ -184,25 +251,32 @@ func (lru *LRU) loadFromDisk() (bool, error) {
 		return false, err
 	}
 
-	lru.mu.Lock()
-	defer lru.mu.Unlock()
-	lru.dll = NewDLL()
-	lru.bucket = make(map[string]*Node, lru.capacity)
-	lru.expiry = make(map[string]time.Time)
+	// Group valid entries by shard to acquire each lock once.
+	type entry struct{ key, val string }
+	var groups [numShards][]entry
 	now := time.Now()
 	for k, v := range snap.Data {
-		// Skip entries that expired while the server was down.
 		if exp, hasExp := snap.Expiry[k]; hasExp && now.After(exp) {
+			continue // expired while server was down
+		}
+		groups[shardIndex(k)] = append(groups[shardIndex(k)], entry{k, v})
+	}
+
+	for i := range lru.shards {
+		if len(groups[i]) == 0 {
 			continue
 		}
-		node := &Node{Key: k, Value: v}
-		lru.dll.Append(node)
-		lru.bucket[k] = node
-	}
-	for k, v := range snap.Expiry {
-		if _, ok := lru.bucket[k]; ok {
-			lru.expiry[k] = v
+		s := &lru.shards[i]
+		s.mu.Lock()
+		for _, e := range groups[i] {
+			node := &Node{Key: e.key, Value: e.val}
+			s.dll.Append(node)
+			s.bucket[e.key] = node
+			if exp, ok := snap.Expiry[e.key]; ok {
+				s.expiry[e.key] = exp
+			}
 		}
+		s.mu.Unlock()
 	}
 	return true, nil
 }

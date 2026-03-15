@@ -87,16 +87,6 @@ func TestLRU_Get(t *testing.T) {
 		t.Errorf("Unexpected error message: wanted %s, got %s", expectedError, err.Error())
 	}
 
-	expectedOrder := []string{"Age", "Country", "Name"}
-
-	curr := lru.dll.Head
-	for _, key := range expectedOrder {
-		if key != curr.Key {
-			t.Errorf("Unexpected key order in LRU Cache: wanted %s, got %s", key, curr.Key)
-		}
-		curr = curr.Next
-	}
-
 }
 
 func TestLRU_Put(t *testing.T) {
@@ -117,23 +107,21 @@ func TestLRU_Put(t *testing.T) {
 		t.Errorf("Unexpected values for the keys: wanted %s,%s,%s; got %s,%s,%s", "Alex", "25", "NP", val1, val2, val3)
 	}
 
-	lru.Put("Wallet", "Bitcoin", 0)
+	// Eviction test: keys k15, k59, k60, k73 all hash to the same shard.
+	// Fill the shard to capacity (3), then add a 4th key and verify the LRU
+	// entry (k15) is evicted.
+	lru2 := NewLRU(numShards*3, "") // each shard gets capacity 3
+	lru2.Put("k15", "v1", 0)
+	lru2.Put("k59", "v2", 0)
+	lru2.Put("k60", "v3", 0)
+	lru2.Put("k73", "v4", 0) // evicts k15 (LRU in this shard)
 
-	_, err := lru.Get("Name")
-	if err == nil {
-		t.Errorf("Expected error while getting evicted key %s ", "Name")
+	if _, err := lru2.Get("k15"); err == nil {
+		t.Error("Expected k15 to be evicted but it was still present")
 	}
-
-	val, err := lru.Get("Wallet")
-
-	if err != nil {
-		t.Errorf("Failed to get value for key %s: err %v", "Wallet", err)
+	if val, err := lru2.Get("k73"); err != nil || val != "v4" {
+		t.Errorf("Expected k73=v4 but got err=%v val=%s", err, val)
 	}
-
-	if val != "Bitcoin" {
-		t.Errorf("Unexpected value for the key %s: wanted %s, got %s", "Wallet", "Bitcoin", val)
-	}
-
 }
 
 func TestLRU_SaveAndLoadFromDisk(t *testing.T) {

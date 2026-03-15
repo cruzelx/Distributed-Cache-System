@@ -118,9 +118,7 @@ func (aux *Auxiliary) BulkPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	for _, kv := range entries {
-		aux.LRU.Put(kv.Key, kv.Value, kv.TTL)
-	}
+	aux.LRU.BulkPut(entries)
 	w.WriteHeader(http.StatusOK)
 }
 
