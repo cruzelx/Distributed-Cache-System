@@ -28,3 +28,10 @@ __pycache__
 
 #ignore metrics
 grafana
+# Terraform
+infrastructure/.terraform/
+infrastructure/**/.terraform/
+infrastructure/bootstrap/terraform.tfstate
+infrastructure/bootstrap/terraform.tfstate.backup
+infrastructure/**/.terraform.lock.hcl
+infrastructure/.terraform.lock.hcl
