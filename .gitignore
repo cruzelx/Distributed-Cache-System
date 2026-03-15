@@ -35,3 +35,4 @@ infrastructure/bootstrap/terraform.tfstate
 infrastructure/bootstrap/terraform.tfstate.backup
 infrastructure/**/.terraform.lock.hcl
 infrastructure/.terraform.lock.hcl
+infrastructure/**/override.tf

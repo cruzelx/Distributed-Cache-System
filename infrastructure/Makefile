@@ -167,13 +167,16 @@ destroy:
 # destroy-bootstrap
 # Tears down the S3 state bucket and DynamoDB lock table created by `make bootstrap`.
 # Run AFTER `make destroy` has completed — the state files must be gone first.
-# Removes prevent_destroy guards, empties all S3 object versions, then destroys.
+#
+# Uses a Terraform override file to disable prevent_destroy without editing
+# source, empties all S3 object versions (required before bucket deletion),
+# then runs terraform destroy.
 # ------------------------------------------------------------------------------
 destroy-bootstrap:
-	@BUCKET=$$(cd $(REPO_ROOT)/bootstrap && terraform output -raw state_bucket_name 2>/dev/null); \
+	@# Read bucket name from backend.tf — works even after state is gone.
+	@BUCKET=$$(grep 'bucket' $(REPO_ROOT)/backend.tf | head -1 | sed 's/.*= *"\(.*\)".*/\1/'); \
 	if [ -z "$$BUCKET" ]; then \
-	  echo "ERROR: Could not read state_bucket_name from bootstrap Terraform output."; \
-	  echo "       Run from infrastructure/ after make bootstrap has been applied."; \
+	  echo "ERROR: Could not parse bucket name from backend.tf."; \
 	  exit 1; \
 	fi; \
 	echo "WARNING: This will permanently delete the Terraform state bucket ($$BUCKET) and lock table."; \
@@ -183,18 +186,21 @@ destroy-bootstrap:
 	  --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null); \
 	if echo "$$VERSIONS" | grep -q '"Key"'; then \
 	  aws s3api delete-objects --bucket $$BUCKET --region $(AWS_REGION) --delete "$$VERSIONS" > /dev/null; \
+	  echo "   Object versions deleted."; \
 	fi; \
 	MARKERS=$$(aws s3api list-object-versions --bucket $$BUCKET --region $(AWS_REGION) \
 	  --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null); \
 	if echo "$$MARKERS" | grep -q '"Key"'; then \
 	  aws s3api delete-objects --bucket $$BUCKET --region $(AWS_REGION) --delete "$$MARKERS" > /dev/null; \
+	  echo "   Delete markers deleted."; \
 	fi; \
-	echo "==> Removing prevent_destroy guards..."; \
-	sed -i.bak '/prevent_destroy/d' $(REPO_ROOT)/bootstrap/main.tf && \
-	  sed -i.bak '/lifecycle {/{ N; /lifecycle {[[:space:]]*}/d; }' $(REPO_ROOT)/bootstrap/main.tf; \
-	rm -f $(REPO_ROOT)/bootstrap/main.tf.bak; \
+	echo "==> Disabling prevent_destroy via override file..."; \
+	printf 'resource "aws_s3_bucket" "tfstate" { lifecycle { prevent_destroy = false } }\n\
+resource "aws_dynamodb_table" "tf_locks" { lifecycle { prevent_destroy = false } }\n' \
+	  > $(REPO_ROOT)/bootstrap/override.tf; \
 	echo "==> Destroying bootstrap resources..."; \
 	cd $(REPO_ROOT)/bootstrap && terraform destroy -auto-approve; \
+	rm -f $(REPO_ROOT)/bootstrap/override.tf; \
 	echo "==> Bootstrap teardown complete."
 
 # ------------------------------------------------------------------------------
