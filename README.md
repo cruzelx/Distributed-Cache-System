@@ -16,6 +16,9 @@ A distributed, in-memory key-value cache built in Go. It uses consistent hashing
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
 - [Running Locally](#running-locally)
+- [Deploying to AWS](#deploying-to-aws)
+- [Simulating Node Failure and Addition](#simulating-node-failure-and-addition)
+- [Load Testing](#load-testing)
 - [Observability](#observability)
 - [Trade-offs and Limitations](#trade-offs-and-limitations)
 
@@ -441,6 +444,357 @@ curl -X POST http://localhost:8080/nodes \
 docker kill distributed-cache-system-aux1-1
 curl http://localhost:8080/data/hello   # still returns 200 — served from replica
 ```
+
+---
+
+## Deploying to AWS
+
+The `infrastructure/` directory contains everything needed to deploy the full stack to AWS EKS in `ap-southeast-2` (Sydney) using Terraform and Kubernetes.
+
+**Prerequisites**
+
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
+- [AWS CLI](https://aws.amazon.com/cli/) configured (`aws configure`)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [Docker](https://www.docker.com/) with buildx support
+
+**What gets provisioned**
+
+| Resource | Detail |
+|---|---|
+| VPC | 3 public + 3 private subnets across 3 AZs, single NAT gateway |
+| EKS cluster | K8s 1.31, 3x `t3.medium` worker nodes |
+| ECR | Two private image repositories (`master`, `auxiliary`) |
+| EBS CSI driver | Enables per-pod persistent volumes for aux nodes |
+| S3 + DynamoDB | Remote Terraform state and lock table |
+
+**Estimated cost:** ~$230/month (EKS control plane + 3x t3.medium + NAT gateway). Run `make destroy` when not in use.
+
+---
+
+### Step 1 — Bootstrap remote state
+
+Creates the S3 bucket and DynamoDB table that Terraform uses to store its own state. Run this **once**.
+
+```bash
+cd infrastructure
+make bootstrap
+```
+
+Copy the `state_bucket_name` output into `backend.tf`:
+
+```hcl
+backend "s3" {
+  bucket = "distributed-cache-tfstate-xxxxxxxx"   # ← paste here
+  ...
+}
+```
+
+---
+
+### Step 2 — Provision infrastructure
+
+```bash
+make init    # initialise Terraform with the remote backend
+make plan    # preview what will be created (63 resources)
+make apply   # provision VPC, EKS cluster, ECR (~15 minutes)
+```
+
+After `apply` completes, outputs are printed:
+
+```
+cluster_endpoint  = "https://xxxx.gr7.ap-southeast-2.eks.amazonaws.com"
+ecr_master_url    = "123456789.dkr.ecr.ap-southeast-2.amazonaws.com/distributed-cache/master"
+ecr_auxiliary_url = "123456789.dkr.ecr.ap-southeast-2.amazonaws.com/distributed-cache/auxiliary"
+configure_kubectl = "aws eks update-kubeconfig --region ap-southeast-2 --name distributed-cache"
+```
+
+---
+
+### Step 3 — Connect kubectl
+
+```bash
+make connect
+# or directly:
+aws eks update-kubeconfig --region ap-southeast-2 --name distributed-cache
+
+kubectl get nodes   # should show 3 Ready nodes
+```
+
+---
+
+### Step 4 — Build and push images
+
+Builds both Docker images for `linux/amd64` (required for EKS x86_64 nodes even if you are on Apple Silicon) and pushes them to ECR.
+
+```bash
+make build-push
+```
+
+To push a versioned tag instead of `latest`:
+
+```bash
+make build-push TAG=v1.0.0
+```
+
+---
+
+### Step 5 — Deploy to Kubernetes
+
+Applies all manifests in dependency order: namespace → storage class → config → masters → aux StatefulSet → nginx → monitoring.
+
+```bash
+make deploy
+```
+
+Watch pods come up:
+
+```bash
+kubectl get pods -n cache -w
+```
+
+All pods should reach `Running` within ~3 minutes. The aux StatefulSet pods (`aux-0`, `aux-1`, `aux-2`) may take slightly longer — they wait for EBS volumes to be provisioned and attached.
+
+---
+
+### Step 6 — Verify
+
+Get the public endpoint:
+
+```bash
+kubectl get svc nginx -n cache
+# EXTERNAL-IP column shows the NLB DNS name
+```
+
+Smoke test:
+
+```bash
+ENDPOINT="http://<NLB-DNS>"
+
+curl -X POST $ENDPOINT/data \
+  -H "Content-Type: application/json" \
+  -d '{"key":"hello","value":"world"}'
+
+curl $ENDPOINT/data/hello
+# → {"key":"hello","value":"world"}
+```
+
+---
+
+### Tear down
+
+```bash
+make destroy   # prompts for confirmation, then destroys all AWS resources
+```
+
+Note: EBS PersistentVolumes use `reclaimPolicy: Retain` — they survive `make destroy`. Delete them manually in the AWS console or with:
+
+```bash
+kubectl delete pvc --all -n cache
+```
+
+---
+
+## Simulating Node Failure and Addition
+
+These steps work against both the local Docker Compose stack and the live EKS deployment. Commands below use the EKS endpoint — replace with `http://localhost:8080` for local testing.
+
+### Simulate a cache node crash
+
+```bash
+ENDPOINT="http://<NLB-DNS>"
+
+# Write a key that will be replicated across two aux nodes
+curl -X POST $ENDPOINT/data \
+  -H "Content-Type: application/json" \
+  -d '{"key":"resilience-test","value":"still-alive"}'
+
+# Hard-kill one aux pod (simulates an EC2/container crash)
+kubectl delete pod aux-1 -n cache
+
+# Key is still readable — served from the replica on aux-0 or aux-2
+curl $ENDPOINT/data/resilience-test
+# → {"key":"resilience-test","value":"still-alive"}
+
+# K8s reschedules aux-1 automatically — watch it come back
+kubectl get pods -n cache -w
+```
+
+### Simulate a full EC2 node failure
+
+```bash
+# Find which EC2 instance is running the pod you want to kill
+kubectl get pods -n cache -o wide
+
+# Get the instance ID for that node
+aws ec2 describe-instances \
+  --filters "Name=private-dns-name,Values=<node-private-dns>" \
+  --query "Reservations[0].Instances[0].InstanceId" \
+  --output text
+
+# Terminate it hard (no graceful shutdown)
+aws ec2 terminate-instances --instance-ids <instance-id>
+
+# Watch the cascade: pods go Pending → ContainerCreating → Running
+# EKS auto-scaler provisions a replacement node in the same AZ
+kubectl get pods -n cache -w
+
+# EBS volumes reattach automatically to the new node (~3-5 minutes)
+# Data is preserved because:
+#   1. The EBS volume (disk snapshot) survives EC2 termination
+#   2. Keys on the dead node had replicas on surviving nodes (RF=2)
+```
+
+**What to expect:**
+
+| Time | Event |
+|---|---|
+| T+0s | EC2 terminated |
+| T+~25s | K8s marks node `NotReady`, evicts pods |
+| T+~25s | nginx pod on dead node immediately replaced on a healthy node |
+| T+~90s | EKS provisions a replacement EC2 in the same AZ |
+| T+~3-5m | EBS volume force-detached from terminated instance, reattached to new node |
+| T+~5m | All pods `Running`, system fully recovered |
+
+### Simulate master failover
+
+```bash
+# Find and kill the primary master pod
+kubectl delete pod -n cache -l app=master
+
+# The standby detects 3 consecutive health check failures (~15s) and promotes
+# Watch the standby logs for the promotion event
+kubectl logs -n cache -l app=master-standby --follow | grep -i "promot"
+
+# System continues serving requests throughout — verify with:
+watch -n1 "curl -s $ENDPOINT/data/resilience-test"
+```
+
+### Add a new cache node at runtime
+
+#### Locally (Docker Compose)
+
+```bash
+# Start the fourth aux container
+docker compose up -d aux4
+
+# Register it with the master — it joins the hash ring immediately
+curl -X POST http://localhost:8080/nodes \
+  -H "Content-Type: application/json" \
+  -d '{"addr":"aux4:3004"}'
+
+# Master fetches mappings from ring neighbours and rebalances keys to aux4
+# Check the master logs to see the rebalance in progress
+docker logs distributed-cache-system-master-1 --follow | grep -i "rebalanc"
+```
+
+#### On EKS
+
+Scale the StatefulSet and register the new pod:
+
+```bash
+# Scale from 3 to 4 aux nodes
+kubectl scale statefulset aux --replicas=4 -n cache
+
+# Wait for aux-3 to be Running
+kubectl get pods -n cache -w
+
+# Get the new pod's cluster-internal address and register it
+kubectl exec -n cache deploy/master -- \
+  wget -qO- --post-data='{"addr":"aux-3.aux-headless.cache.svc.cluster.local:3000"}' \
+  --header='Content-Type: application/json' \
+  http://localhost:8000/nodes
+
+# Also update the ConfigMap so future master restarts know about aux-3
+kubectl edit configmap cache-config -n cache
+# Update AUX_SERVERS to include aux-3.aux-headless.cache.svc.cluster.local:3000
+```
+
+### Verify rebalance after node change
+
+```bash
+# Write 20 keys before the change
+for i in $(seq 1 20); do
+  curl -s -X POST $ENDPOINT/data \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"k$i\",\"value\":\"v$i\"}" > /dev/null
+done
+
+# Kill a node or add one here
+
+# Verify all 20 keys are still readable
+MISSING=0
+for i in $(seq 1 20); do
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" $ENDPOINT/data/k$i)
+  if [ "$STATUS" != "200" ]; then
+    echo "MISSING: k$i"
+    MISSING=$((MISSING+1))
+  fi
+done
+echo "Missing keys: $MISSING / 20"
+```
+
+---
+
+## Load Testing
+
+Uses [Locust](https://locust.io/) to drive realistic mixed workloads. The test file is at `load_test/locust.py`.
+
+**Install Locust:**
+
+```bash
+pip install locust
+```
+
+**Run against the live EKS endpoint:**
+
+```bash
+cd load_test
+
+locust -f locust.py \
+  --host http://<NLB-DNS> \
+  --headless -u 100 -r 10 --run-time 2m \
+  --html ../load_test_report.html
+```
+
+**Run with the interactive web UI** (opens at `http://localhost:8089`):
+
+```bash
+locust -f locust.py --host http://<NLB-DNS>
+```
+
+**Run against the local Docker Compose stack:**
+
+```bash
+locust -f locust.py --host http://localhost:8080 \
+  --headless -u 50 -r 5 --run-time 1m
+```
+
+**What the test simulates:**
+
+| User type | Weight | Behaviour |
+|---|---|---|
+| `ReadHeavyUser` | 70% | 4 GETs per PUT across a 500-key pool — simulates a typical cache consumer |
+| `WriteHeavyUser` | 20% | High write rate with unique keys + write-then-read consistency checks — simulates an ingestion pipeline |
+| `BulkUser` | 10% | Bulk PUT and bulk GET with batches of 10-50 keys — exercises the shard batch-locking path |
+
+**Observed results on 3x t3.medium EKS nodes (ap-southeast-2), 100 concurrent users:**
+
+```
+~620 req/s total throughput
+p50:  50ms
+p95:  77ms
+p99: 120ms
+0 failures across 69,683 requests
+```
+
+**Tuning parameters** (edit `locust.py` or pass via CLI):
+
+| Parameter | CLI flag | Description |
+|---|---|---|
+| Concurrent users | `-u 100` | Peak number of simulated users |
+| Ramp-up rate | `-r 10` | Users added per second during ramp-up |
+| Duration | `--run-time 2m` | How long to sustain peak load |
 
 ---
 
