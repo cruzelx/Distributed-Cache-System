@@ -1,0 +1,23 @@
+# Shared configuration consumed by both master and auxiliary deployments.
+# All values are strings; numeric values must be quoted here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cache-config
+  namespace: cache
+data:
+  # Headless DNS addresses for all 3 aux StatefulSet pods.
+  # The master uses these to build the consistent-hash ring on startup.
+  AUX_SERVERS: "aux-0.aux-headless.cache.svc.cluster.local:3000,aux-1.aux-headless.cache.svc.cluster.local:3000,aux-2.aux-headless.cache.svc.cluster.local:3000"
+
+  # Number of auxiliary nodes each key is replicated to.
+  REPLICATION_FACTOR: "2"
+
+  # Maximum LRU entries per auxiliary node.
+  LRU_CAPACITY: "512"
+
+  # Port the auxiliary nodes listen on.
+  PORT: "3000"
+
+  # Port the master nodes listen on.
+  MASTER_PORT: "8000"

@@ -1,0 +1,119 @@
+# ==============================================================================
+# nginx Reverse Proxy — ConfigMap + Deployment + LoadBalancer Service
+# ==============================================================================
+# nginx sits in front of the master nodes and routes:
+#   - GET requests + POST /data/bulk/get  → both masters (load-balanced reads)
+#   - everything else                     → primary master only (writes)
+# ==============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: cache
+data:
+  nginx.conf: |
+    worker_processes auto;
+
+    events {
+        worker_connections 2048;
+    }
+
+    http {
+        keepalive_timeout 75s;
+        keepalive_requests 1000;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        # Writes go to primary only; standby is failover.
+        upstream masters_write {
+            server master:8000 max_fails=3 fail_timeout=15s;
+            server master-standby:8000 backup;
+        }
+
+        # Reads are load-balanced across both masters.
+        upstream masters_read {
+            server master:8000 max_fails=3 fail_timeout=15s;
+            server master-standby:8000 max_fails=3 fail_timeout=15s;
+        }
+
+        # Route GETs and bulk-get POSTs to the read pool; everything else to writes.
+        map "$request_method$request_uri" $upstream_pool {
+            ~^POST/data/bulk/get  masters_read;
+            ~^GET                 masters_read;
+            default               masters_write;
+        }
+
+        server {
+            listen 3000;
+            location / {
+                proxy_pass            http://$upstream_pool;
+                proxy_connect_timeout 2s;
+                proxy_read_timeout    15s;
+                proxy_next_upstream   error timeout;
+            }
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: cache
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf  # mount only the file, not the whole directory
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+
+---
+# AWS Network Load Balancer — provides a stable external entry point.
+# The NLB annotation tells the AWS cloud-controller to provision an NLB
+# instead of the default Classic ELB.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: cache
+  labels:
+    app: nginx
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP

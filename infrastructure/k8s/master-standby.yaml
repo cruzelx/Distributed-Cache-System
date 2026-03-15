@@ -1,0 +1,112 @@
+# ==============================================================================
+# Standby Master — Deployment + PVC + Service
+# ==============================================================================
+# The standby master syncs from the primary and serves read traffic.
+# nginx routes writes to the primary; reads are load-balanced across both.
+# MASTER_IMAGE is substituted with the real ECR URL by `make deploy`.
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: master-standby
+  namespace: cache
+  labels:
+    app: master
+    role: standby
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: master
+      role: standby
+  template:
+    metadata:
+      labels:
+        app: master
+        role: standby
+    spec:
+      containers:
+        - name: master-standby
+          image: MASTER_IMAGE  # replaced by `make deploy`
+          ports:
+            - containerPort: 8000
+          env:
+            - name: ROLE
+              value: "standby"
+            - name: PORT
+              value: "8000"
+            # Tell the standby where the primary is so it can pull state.
+            - name: PRIMARY_MASTER
+              value: "master:8000"
+            - name: AUX_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: cache-config
+                  key: AUX_SERVERS
+            - name: REPLICATION_FACTOR
+              valueFrom:
+                configMapKeyRef:
+                  name: cache-config
+                  key: REPLICATION_FACTOR
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: master-standby-data
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: master-standby-data
+  namespace: cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ebs-gp3
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: master-standby
+  namespace: cache
+  labels:
+    app: master
+    role: standby
+spec:
+  type: ClusterIP
+  selector:
+    app: master
+    role: standby
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

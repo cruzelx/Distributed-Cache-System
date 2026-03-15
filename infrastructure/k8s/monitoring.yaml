@@ -1,0 +1,121 @@
+# ==============================================================================
+# Monitoring — Prometheus + Grafana
+# ==============================================================================
+# NOTE: Prometheus requires a ConfigMap containing your prometheus.yml scrape
+# config.  Create it from the file already in the repo before applying:
+#
+#   kubectl create configmap prometheus-config \
+#     --from-file=prometheus.yml=./prometheus/prometheus.yml \
+#     -n cache
+#
+# The scrape targets in that file use docker-compose service names; update
+# them to use Kubernetes DNS names before creating the ConfigMap:
+#   master:8000          -> master.cache.svc.cluster.local:8000
+#   aux{1,2,3}:300{1,2,3} -> aux-{0,1,2}.aux-headless.cache.svc.cluster.local:3000
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: cache
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+            - "--web.console.templates=/usr/share/prometheus/consoles"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus
+            - name: prometheus-data
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        # Created manually before applying: see the NOTE at the top of this file.
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+        - name: prometheus-data
+          emptyDir: {}  # swap for a PVC if you need persistent metrics
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: cache
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-piechart-panel"
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: grafana-data
+          emptyDir: {}  # swap for a PVC to persist dashboards across pod restarts
+
+---
+# Access Grafana via port-forward rather than a public LoadBalancer:
+#   kubectl port-forward svc/grafana 3000:3000 -n cache
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: cache
+  labels:
+    app: grafana
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

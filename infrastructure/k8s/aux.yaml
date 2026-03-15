@@ -1,0 +1,120 @@
+# ==============================================================================
+# Auxiliary Cache Nodes — Headless Service + ClusterIP Service + StatefulSet
+# ==============================================================================
+# Aux nodes form the actual distributed cache layer.  The StatefulSet gives
+# each pod a stable DNS name (aux-0, aux-1, aux-2) via the headless service,
+# which is what the consistent-hash ring in the master uses.
+# AUX_IMAGE is substituted with the real ECR URL by `make deploy`.
+# ==============================================================================
+
+# Headless service: enables stable per-pod DNS (aux-{n}.aux-headless.cache.svc.cluster.local).
+apiVersion: v1
+kind: Service
+metadata:
+  name: aux-headless
+  namespace: cache
+  labels:
+    app: aux
+spec:
+  clusterIP: None  # headless — no virtual IP, DNS returns pod IPs directly
+  selector:
+    app: aux
+  ports:
+    - name: cache
+      port: 3000
+      targetPort: 3000
+
+---
+# ClusterIP service: provides a single stable VIP for general traffic (e.g. health checks).
+apiVersion: v1
+kind: Service
+metadata:
+  name: aux
+  namespace: cache
+  labels:
+    app: aux
+spec:
+  type: ClusterIP
+  selector:
+    app: aux
+  ports:
+    - name: cache
+      port: 3000
+      targetPort: 3000
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aux
+  namespace: cache
+  labels:
+    app: aux
+spec:
+  replicas: 3
+  serviceName: aux-headless  # must match the headless service name above
+  selector:
+    matchLabels:
+      app: aux
+  template:
+    metadata:
+      labels:
+        app: aux
+    spec:
+      containers:
+        - name: aux
+          image: AUX_IMAGE  # replaced by `make deploy`
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            # Expose the pod's own name (e.g. "aux-0") as its node ID so the
+            # consistent-hash ring can distinguish replicas.
+            - name: ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Aux nodes report cache misses back through nginx to the master.
+            - name: MASTER_SERVER
+              value: "nginx:3000"
+            - name: LRU_CAPACITY
+              valueFrom:
+                configMapKeyRef:
+                  name: cache-config
+                  key: LRU_CAPACITY
+          volumeMounts:
+            - name: aux-data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+  # Each pod gets its own EBS volume; volumes are retained if the pod is deleted.
+  volumeClaimTemplates:
+    - metadata:
+        name: aux-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: ebs-gp3
+        resources:
+          requests:
+            storage: 2Gi

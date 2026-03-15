@@ -1,0 +1,13 @@
+# StorageClass backed by AWS EBS gp3 volumes.
+# WaitForFirstConsumer ensures the volume is created in the same AZ as the
+# pod that claims it — critical for StatefulSets spread across AZs.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+reclaimPolicy: Retain          # Keep the EBS volume if the PVC is deleted.
+allowVolumeExpansion: true     # Allow resizing without pod restarts.
+volumeBindingMode: WaitForFirstConsumer
