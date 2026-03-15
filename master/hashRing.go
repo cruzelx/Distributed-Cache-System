@@ -55,20 +55,41 @@ func (hr *HashRing) RemoveNode(node string) {
 }
 
 func (hr *HashRing) GetNode(key string) (string, error) {
+	nodes, err := hr.GetNodes(key, 1)
+	if err != nil {
+		return "", err
+	}
+	return nodes[0], nil
+}
+
+// GetNodes returns up to n distinct physical nodes for key, starting from
+// its position on the ring and walking clockwise. If fewer than n distinct
+// nodes exist, all available nodes are returned.
+func (hr *HashRing) GetNodes(key string, n int) ([]string, error) {
 	hr.mu.RLock()
 	defer hr.mu.RUnlock()
 
-	hash := crc32.ChecksumIEEE([]byte(key))
-	index := sort.Search(len(hr.sortedHash), func(i int) bool {
-		return hr.sortedHash[i] >= hash
-	})
-	if index == len(hr.sortedHash) {
-		index = 0
+	if len(hr.sortedHash) == 0 {
+		return nil, fmt.Errorf("hash ring is empty")
 	}
 
-	if _, ok := hr.hashmap[hr.sortedHash[index]]; ok {
-		return hr.hashmap[hr.sortedHash[index]], nil
-	} else {
-		return "", fmt.Errorf("node not found for the key %s", key)
+	hash := crc32.ChecksumIEEE([]byte(key))
+	start := sort.Search(len(hr.sortedHash), func(i int) bool {
+		return hr.sortedHash[i] >= hash
+	})
+	if start == len(hr.sortedHash) {
+		start = 0
 	}
+
+	seen := make(map[string]bool)
+	nodes := make([]string, 0, n)
+	for i := 0; i < len(hr.sortedHash) && len(nodes) < n; i++ {
+		idx := (start + i) % len(hr.sortedHash)
+		node := hr.hashmap[hr.sortedHash[idx]]
+		if !seen[node] {
+			seen[node] = true
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes, nil
 }

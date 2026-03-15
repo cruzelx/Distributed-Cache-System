@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,9 +57,10 @@ type Master struct {
 	auxServers       []string
 	auxMu            sync.RWMutex
 	activeAuxServers map[string]bool
-	isPrimary        atomic.Bool
-	role             string // "primary" or "standby"
-	standby          string // address of standby server (primary only)
+	isPrimary         atomic.Bool
+	role              string // "primary" or "standby"
+	standby           string // address of standby server (primary only)
+	replicationFactor int
 
 	// health check state — set by HealthCheck, used by startAuxMonitor/AddNodeHandler
 	deadAuxChan  chan string
@@ -75,16 +77,24 @@ func NewMaster(role, standby string) *Master {
 
 	initMetrics()
 
+	rf := 2
+	if val := os.Getenv("REPLICATION_FACTOR"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			rf = n
+		}
+	}
+
 	m := &Master{
-		client:           client,
-		hashring:         NewHashRing(150),
-		requests:         masterRequests,
-		responseTime:     masterResponseTime,
-		filepath:         BackupFilePath,
-		auxServers:       getAuxServers(),
-		activeAuxServers: make(map[string]bool),
-		role:             role,
-		standby:          standby,
+		client:            client,
+		hashring:          NewHashRing(150),
+		requests:          masterRequests,
+		responseTime:      masterResponseTime,
+		filepath:          BackupFilePath,
+		auxServers:        getAuxServers(),
+		activeAuxServers:  make(map[string]bool),
+		role:              role,
+		standby:           standby,
+		replicationFactor: rf,
 	}
 	m.isPrimary.Store(role == "primary")
 	return m
@@ -105,15 +115,12 @@ func (m *Master) Put(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	var kv KeyVal
-
 	if err := json.NewDecoder(r.Body).Decode(&kv); err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
-	node, err := m.hashring.GetNode(kv.Key)
-	fmt.Println("Node: ", node)
-
+	nodes, err := m.hashring.GetNodes(kv.Key, m.replicationFactor)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -125,14 +132,35 @@ func (m *Master) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
-	if err != nil {
+	// Write to all replicas in parallel; succeed if at least one write lands.
+	errs := make(chan error, len(nodes))
+	for _, node := range nodes {
+		go func(node string) {
+			resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+			errs <- nil
+		}(node)
+	}
+
+	succeeded := 0
+	for range nodes {
+		if err := <-errs; err != nil {
+			log.Printf("Put: replica write to failed: %v", err)
+		} else {
+			succeeded++
+		}
+	}
+
+	if succeeded == 0 {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	defer resp.Body.Close()
 
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(http.StatusOK)
 	elapsedTime := time.Since(startTime).Seconds()
 	m.requests.WithLabelValues(r.Method).Inc()
 	m.responseTime.WithLabelValues(r.Method).Observe(elapsedTime)
@@ -143,38 +171,39 @@ func (m *Master) Get(w http.ResponseWriter, r *http.Request) {
 
 	vars := mux.Vars(r)
 	key, ok := vars["key"]
-
 	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	node, err := m.hashring.GetNode(key)
+	nodes, err := m.hashring.GetNodes(key, m.replicationFactor)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	resp, err := m.client.Get(fmt.Sprintf("http://%s/data/%s", node, key))
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	// Try replicas in order; return on the first successful hit.
+	for _, node := range nodes {
+		resp, err := m.client.Get(fmt.Sprintf("http://%s/data/%s", node, key))
+		if err != nil {
+			log.Printf("Get: replica %s unavailable: %v", node, err)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, resp.Body)
+		resp.Body.Close()
+		elapsedTime := time.Since(startTime).Seconds()
+		m.requests.WithLabelValues(r.Method).Inc()
+		m.responseTime.WithLabelValues(r.Method).Observe(elapsedTime)
 		return
 	}
 
-	defer resp.Body.Close()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	elapsedTime := time.Since(startTime).Seconds()
-	m.requests.WithLabelValues(r.Method).Inc()
-	m.responseTime.WithLabelValues(r.Method).Observe(elapsedTime)
+	http.Error(w, fmt.Sprintf("key %s not found", key), http.StatusNotFound)
 }
 
 func (m *Master) Delete(w http.ResponseWriter, r *http.Request) {
@@ -185,25 +214,34 @@ func (m *Master) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := m.hashring.GetNode(key)
+	nodes, err := m.hashring.GetNodes(key, m.replicationFactor)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://%s/data/%s", node, key), nil)
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+	// Delete from all replicas; 200 if at least one had the key.
+	deleted := false
+	for _, node := range nodes {
+		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://%s/data/%s", node, key), nil)
+		if err != nil {
+			continue
+		}
+		resp, err := m.client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			deleted = true
+		}
+		resp.Body.Close()
 	}
 
-	resp, err := m.client.Do(req)
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	if !deleted {
+		http.Error(w, fmt.Sprintf("key %s not found", key), http.StatusNotFound)
 		return
 	}
-	defer resp.Body.Close()
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (m *Master) BulkPut(w http.ResponseWriter, r *http.Request) {
@@ -213,15 +251,17 @@ func (m *Master) BulkPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Group entries by their target aux node.
+	// Group entries by target nodes; each entry goes to all its replicas.
 	groups := make(map[string][]KeyVal)
 	for _, kv := range entries {
-		node, err := m.hashring.GetNode(kv.Key)
+		nodes, err := m.hashring.GetNodes(kv.Key, m.replicationFactor)
 		if err != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		groups[node] = append(groups[node], kv)
+		for _, node := range nodes {
+			groups[node] = append(groups[node], kv)
+		}
 	}
 
 	// Fan out to each node in parallel.
@@ -259,54 +299,80 @@ func (m *Master) BulkGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Group keys by their target aux node.
+	// Group keys by primary node.
 	groups := make(map[string][]string)
 	for _, key := range keys {
-		node, err := m.hashring.GetNode(key)
+		nodes, err := m.hashring.GetNodes(key, 1)
 		if err != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		groups[node] = append(groups[node], key)
+		groups[nodes[0]] = append(groups[nodes[0]], key)
 	}
 
-	type result struct {
+	type nodeResult struct {
 		data map[string]string
 		err  error
 	}
-	results := make(chan result, len(groups))
+	resultCh := make(chan nodeResult, len(groups))
 
 	for node, batch := range groups {
 		go func(node string, batch []string) {
 			body, err := json.Marshal(batch)
 			if err != nil {
-				results <- result{err: err}
+				resultCh <- nodeResult{err: err}
 				return
 			}
 			resp, err := m.client.Post(fmt.Sprintf("http://%s/bulk/get", node), "application/json", bytes.NewBuffer(body))
 			if err != nil {
-				results <- result{err: err}
+				resultCh <- nodeResult{err: err}
 				return
 			}
 			defer resp.Body.Close()
 			var found map[string]string
 			if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
-				results <- result{err: err}
+				resultCh <- nodeResult{err: err}
 				return
 			}
-			results <- result{data: found}
+			resultCh <- nodeResult{data: found}
 		}(node, batch)
 	}
 
 	merged := make(map[string]string, len(keys))
 	for range groups {
-		res := <-results
-		if res.err != nil {
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
+		res := <-resultCh
+		if res.err == nil {
+			for k, v := range res.data {
+				merged[k] = v
+			}
 		}
-		for k, v := range res.data {
-			merged[k] = v
+	}
+
+	// Second pass: for keys not found on their primary, try secondary replicas.
+	if m.replicationFactor > 1 {
+		for _, key := range keys {
+			if _, found := merged[key]; found {
+				continue
+			}
+			nodes, err := m.hashring.GetNodes(key, m.replicationFactor)
+			if err != nil {
+				continue
+			}
+			for _, node := range nodes[1:] {
+				resp, err := m.client.Get(fmt.Sprintf("http://%s/data/%s", node, key))
+				if err != nil {
+					continue
+				}
+				if resp.StatusCode == http.StatusOK {
+					var kv KeyVal
+					if err := json.NewDecoder(resp.Body).Decode(&kv); err == nil {
+						merged[key] = kv.Value
+					}
+					resp.Body.Close()
+					break
+				}
+				resp.Body.Close()
+			}
 		}
 	}
 
@@ -335,9 +401,9 @@ func (m *Master) rebalance(keyvals map[string]string) {
 			defer wg.Done()
 
 			for keyval := range keyvalChan {
-				node, err := m.hashring.GetNode(keyval.Key)
+				nodes, err := m.hashring.GetNodes(keyval.Key, m.replicationFactor)
 				if err != nil {
-					log.Printf("failed to remap key %s to server %s", keyval.Key, node)
+					log.Printf("failed to remap key %s: %v", keyval.Key, err)
 					continue
 				}
 
@@ -347,12 +413,14 @@ func (m *Master) rebalance(keyvals map[string]string) {
 					continue
 				}
 
-				resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
-				if err != nil {
-					log.Printf("failed to send key-value pair to aux server %s", node)
-					continue
+				for _, node := range nodes {
+					resp, err := m.client.Post(fmt.Sprintf("http://%s/data", node), "application/json", bytes.NewBuffer(postBody))
+					if err != nil {
+						log.Printf("failed to send key-value pair to aux server %s", node)
+						continue
+					}
+					resp.Body.Close()
 				}
-				resp.Body.Close()
 			}
 		}(i)
 	}

@@ -13,6 +13,7 @@ services:
       - STANDBY_SERVER=master-standby:8000
       - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
       - PORT=8000
+      - REPLICATION_FACTOR=2
     volumes:
       - ./master:/app
       - ./data:/data
@@ -29,6 +30,7 @@ services:
       - PRIMARY_MASTER=master:8000
       - AUX_SERVERS=aux1:3001,aux2:3002,aux3:3003
       - PORT=8000
+      - REPLICATION_FACTOR=2
     volumes:
       - ./master:/app
       - ./data:/data
