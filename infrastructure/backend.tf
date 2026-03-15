@@ -15,7 +15,7 @@
 
 terraform {
   backend "s3" {
-    bucket         = "REPLACE_WITH_BOOTSTRAP_OUTPUT" # <-- replace this
+    bucket         = "distributed-cache-tfstate-c4515326"
     key            = "prod/terraform.tfstate"
     region         = "ap-southeast-2"
     dynamodb_table = "distributed-cache-tf-locks"

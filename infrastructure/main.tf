@@ -88,7 +88,8 @@ module "eks" {
 
   # Allow kubectl access from anywhere — lock this down to specific CIDRs in
   # a production environment.
-  cluster_endpoint_public_access = true
+  cluster_endpoint_public_access       = true
+  enable_cluster_creator_admin_permissions = true
 
   eks_managed_node_groups = {
     main = {
@@ -100,6 +101,10 @@ module "eks" {
 
       # Use the latest Amazon Linux 2 EKS-optimised AMI.
       ami_type = "AL2_x86_64"
+
+      iam_role_additional_policies = {
+        AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+      }
 
       labels = {
         role = "worker"

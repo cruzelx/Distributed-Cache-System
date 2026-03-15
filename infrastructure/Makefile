@@ -41,7 +41,7 @@ bootstrap:
 	@echo "==> Bootstrapping Terraform remote state infrastructure..."
 	cd $(REPO_ROOT)/bootstrap && \
 	  terraform init && \
-	  terraform apply
+	  terraform apply -auto-approve
 	@echo ""
 	@echo "NEXT STEP: copy the 'state_bucket_name' output above into"
 	@echo "  infrastructure/backend.tf  (replace REPLACE_WITH_BOOTSTRAP_OUTPUT)"
@@ -101,12 +101,14 @@ build-push:
 	  docker login --username AWS --password-stdin $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 
 	@echo "==> Building and pushing master image ($(MASTER_ECR_URL):$(TAG))..."
-	docker build -t $(MASTER_ECR_URL):$(TAG) -f $(REPO_ROOT)/../master/Dockerfile $(REPO_ROOT)/../master
-	docker push $(MASTER_ECR_URL):$(TAG)
+	docker buildx build --platform linux/amd64 --push \
+	  -t $(MASTER_ECR_URL):$(TAG) \
+	  -f $(REPO_ROOT)/../master/Dockerfile $(REPO_ROOT)/../master
 
 	@echo "==> Building and pushing auxiliary image ($(AUX_ECR_URL):$(TAG))..."
-	docker build -t $(AUX_ECR_URL):$(TAG) -f $(REPO_ROOT)/../auxiliary/Dockerfile $(REPO_ROOT)/../auxiliary
-	docker push $(AUX_ECR_URL):$(TAG)
+	docker buildx build --platform linux/amd64 --push \
+	  -t $(AUX_ECR_URL):$(TAG) \
+	  -f $(REPO_ROOT)/../auxiliary/Dockerfile $(REPO_ROOT)/../auxiliary
 
 	@echo "==> Images pushed successfully."
 
