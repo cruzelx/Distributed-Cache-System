@@ -98,6 +98,23 @@ services:
     networks:
       - cache-network
 
+  aux4:
+    build:
+      context: "./auxiliary"
+    restart: unless-stopped
+    environment:
+      - PORT=3004
+      - MASTER_SERVER=nginx:3000
+      - ID=aux4
+      - LRU_CAPACITY=128
+    ports:
+      - 9004:3004
+    volumes:
+      - ./auxiliary:/app
+      - ./data:/data
+    networks:
+      - cache-network
+
   # Metrics
   prometheus:
     image: prom/prometheus

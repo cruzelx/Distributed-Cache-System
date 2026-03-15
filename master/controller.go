@@ -59,6 +59,11 @@ type Master struct {
 	isPrimary        atomic.Bool
 	role             string // "primary" or "standby"
 	standby          string // address of standby server (primary only)
+
+	// health check state — set by HealthCheck, used by startAuxMonitor/AddNodeHandler
+	deadAuxChan  chan string
+	aliveAuxChan chan string
+	healthDone   chan struct{}
 }
 
 func NewMaster(role, standby string) *Master {
@@ -684,52 +689,112 @@ func (m *Master) handleAliveAuxServer(aliveAux string) {
 	log.Printf("heart of %s is beating... ", aliveAux)
 }
 
+// AddNodeHandler registers a new aux node into the ring at runtime.
+func (m *Master) AddNodeHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Addr == "" {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	if !m.checkAuxServerHealth(req.Addr) {
+		http.Error(w, fmt.Sprintf("node %s unreachable", req.Addr), http.StatusBadGateway)
+		return
+	}
+
+	m.auxMu.Lock()
+	if _, exists := m.activeAuxServers[req.Addr]; exists {
+		m.auxMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	m.auxServers = append(m.auxServers, req.Addr)
+	m.activeAuxServers[req.Addr] = true
+	// Compute ring neighbors before adding so we know whose keys will migrate.
+	neighbors := m.getDistinctNodesToRebalance(req.Addr)
+	m.hashring.AddNode(req.Addr)
+	m.auxMu.Unlock()
+
+	go m.pushRingUpdate("add", req.Addr)
+
+	// Rebalance keys from ring neighbors that now belong to the new node.
+	for _, node := range neighbors {
+		go func(node string) {
+			resp, err := m.client.Get(fmt.Sprintf("http://%s/mappings", node))
+			if err != nil {
+				log.Printf("AddNode: failed to get mappings from %s: %v", node, err)
+				return
+			}
+			defer resp.Body.Close()
+			var mappings map[string]string
+			if err := json.NewDecoder(resp.Body).Decode(&mappings); err != nil {
+				log.Printf("AddNode: failed to decode mappings from %s: %v", node, err)
+				return
+			}
+			m.rebalance(mappings)
+		}(node)
+	}
+
+	// Start health monitoring for the new node if HealthCheck is running.
+	if m.healthDone != nil {
+		m.startAuxMonitor(req.Addr, 5*time.Second)
+	}
+
+	log.Printf("dynamically added aux node %s", req.Addr)
+	w.WriteHeader(http.StatusOK)
+}
+
+// startAuxMonitor spawns a single health-polling goroutine for aux.
+// Must only be called after HealthCheck has initialized the shared channels.
+func (m *Master) startAuxMonitor(aux string, duration time.Duration) {
+	go func() {
+		for {
+			select {
+			case <-m.healthDone:
+				return
+			default:
+			}
+
+			if !m.checkAuxServerHealth(aux) {
+				select {
+				case m.deadAuxChan <- aux:
+				case <-m.healthDone:
+					return
+				}
+			} else {
+				select {
+				case m.aliveAuxChan <- aux:
+				case <-m.healthDone:
+					return
+				}
+			}
+
+			time.Sleep(duration)
+		}
+	}()
+}
+
 // Checks the heartbeat of aux server every {duration} seconds
 func (m *Master) HealthCheck(duration time.Duration, stop <-chan interface{}) {
 	log.Printf("checking health of aux servers... %v", m.auxServers)
 
-	done := make(chan struct{})
-	defer close(done)
-
-	deadAuxChan := make(chan string)
-	aliveAuxChan := make(chan string)
+	m.deadAuxChan = make(chan string)
+	m.aliveAuxChan = make(chan string)
+	m.healthDone = make(chan struct{})
+	defer close(m.healthDone)
 
 	for _, aux := range m.auxServers {
-
-		go func(aux string) {
-
-			for {
-				select {
-				case <-done:
-					return
-				default:
-				}
-
-				if !m.checkAuxServerHealth(aux) {
-					select {
-					case deadAuxChan <- aux:
-					case <-done:
-						return
-					}
-				} else {
-					select {
-					case aliveAuxChan <- aux:
-					case <-done:
-						return
-					}
-				}
-
-				time.Sleep(duration)
-			}
-		}(aux)
+		m.startAuxMonitor(aux, duration)
 	}
 
 	for {
 		select {
-		case deadAux := <-deadAuxChan:
+		case deadAux := <-m.deadAuxChan:
 			m.handleDeadAuxServer(deadAux)
 
-		case aliveAux := <-aliveAuxChan:
+		case aliveAux := <-m.aliveAuxChan:
 			m.handleAliveAuxServer(aliveAux)
 
 		case <-stop:

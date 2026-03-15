@@ -35,6 +35,7 @@ func Start() {
 	r.HandleFunc("/data/{key}", m.Get).Methods("GET")
 	r.HandleFunc("/data/{key}", m.Delete).Methods("DELETE")
 	r.HandleFunc("/rebalance-dead-aux", m.RebalanceDeadAuxServer).Methods("POST")
+	r.HandleFunc("/nodes", m.AddNodeHandler).Methods("POST")
 	r.HandleFunc("/health", m.HealthHandler).Methods("GET")
 	r.HandleFunc("/role", m.RoleHandler).Methods("GET")
 	r.HandleFunc("/state", m.StateHandler).Methods("GET")
