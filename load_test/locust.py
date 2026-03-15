@@ -4,7 +4,7 @@ Distributed Cache Load Test
 Run against the live EKS endpoint:
 
   locust -f locust.py \
-    --host http://a582933ee05ad4d2cb7e85bc40e14f84-f679333f0bb5d838.elb.ap-southeast-2.amazonaws.com \
+    --host <hosted-cache-endpoint> \
     --headless -u 100 -r 10 --run-time 2m
 
 Or open the web UI (default localhost:8089) and configure interactively:
@@ -65,7 +65,11 @@ class ReadHeavyUser(HttpUser):
         key = random_key()
         self.client.post(
             "/data",
-            json={"key": key, "value": random_value(), "ttl": random.choice([0, 30, 60, 300])},
+            json={
+                "key": key,
+                "value": random_value(),
+                "ttl": random.choice([0, 30, 60, 300]),
+            },
             name="/data PUT",
         )
 
@@ -130,7 +134,9 @@ class WriteHeavyUser(HttpUser):
                 if get_resp.status_code == 200:
                     body = get_resp.json()
                     if body.get("value") != value:
-                        get_resp.failure(f"Consistency violation: wrote {value!r}, read {body.get('value')!r}")
+                        get_resp.failure(
+                            f"Consistency violation: wrote {value!r}, read {body.get('value')!r}"
+                        )
                     else:
                         get_resp.success()
                 elif get_resp.status_code == 404:
