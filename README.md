@@ -14,6 +14,7 @@ A distributed, in-memory key-value cache built in Go. It uses consistent hashing
 - [Data Flow](#data-flow)
 - [Recovery Scenarios](#recovery-scenarios)
 - [API Reference](#api-reference)
+- [Go Client](#go-client)
 - [Configuration](#configuration)
 - [Running Locally](#running-locally)
 - [Deploying to AWS](#deploying-to-aws)
@@ -281,7 +282,8 @@ On disk:   expired keys are skipped when loading from disk on startup
 
 ```
 1. Operator spins up a new aux container
-2. POST /nodes {"addr":"aux4:3004"}
+2. aux node starts up and immediately calls POST /nodes {"addr":"aux4:3004"}
+   on the master (retried every 15 s until the master is reachable)
 3. Master verifies aux4 is reachable (health check)
 4. aux4 added to ring and activeAuxServers
 5. Ring-update("add","aux4") pushed to standby
@@ -289,6 +291,8 @@ On disk:   expired keys are skipped when loading from disk on startup
    (keys that now belong to aux4 land on aux4 through normal rebalance)
 7. New health monitoring goroutine started for aux4
 ```
+
+Aux nodes re-register with the master every 15 seconds, so a master restart is recovered automatically without any operator intervention.
 
 ---
 
@@ -374,6 +378,83 @@ DELETE http://localhost:9001/erase      # clear the entire cache
 
 ---
 
+## Go Client
+
+A Go library lives in `client/` for programs that want to talk to the cache without hand-crafting HTTP requests.
+
+**Import**
+
+```go
+import cache "distributed-cache/client"
+```
+
+**Constructor**
+
+```go
+// addr is the nginx load balancer address (or master directly).
+c := cache.New("localhost:8080")
+
+// Options
+c := cache.New("localhost:8080",
+    cache.WithTimeout(2 * time.Second),
+    cache.WithHTTPClient(myHTTPClient),
+)
+```
+
+**Methods**
+
+```go
+// Single key operations
+err  := c.Set(ctx, "hello", "world")
+val, err := c.Get(ctx, "hello")    // returns cache.ErrNotFound if missing
+err  = c.Delete(ctx, "hello")      // returns cache.ErrNotFound if missing
+
+// Bulk operations
+err  = c.BulkSet(ctx, map[string]string{"a": "1", "b": "2"})
+vals, err := c.BulkGet(ctx, []string{"a", "b", "missing"})
+// vals == map[string]string{"a":"1","b":"2"}  — missing keys are omitted
+
+// Cluster health
+err = c.Health(ctx)
+```
+
+**Example**
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+
+    cache "distributed-cache/client"
+)
+
+func main() {
+    c := cache.New("localhost:8080")
+    ctx := context.Background()
+
+    if err := c.Set(ctx, "user:1", "alice"); err != nil {
+        log.Fatal(err)
+    }
+
+    val, err := c.Get(ctx, "user:1")
+    if errors.Is(err, cache.ErrNotFound) {
+        fmt.Println("cache miss")
+    } else if err != nil {
+        log.Fatal(err)
+    } else {
+        fmt.Println(val) // alice
+    }
+}
+```
+
+The client uses a persistent connection pool by default (64 idle connections) and is safe for concurrent use. Tests run against an `httptest.Server` — no live cluster needed.
+
+---
+
 ## Configuration
 
 All configuration is via environment variables.
@@ -395,7 +476,7 @@ All configuration is via environment variables.
 |---|---|---|
 | `PORT` | — | Port to listen on |
 | `ID` | — | Unique identifier (used for disk persistence filename) |
-| `MASTER_SERVER` | — | Master address (used on graceful shutdown to send mappings) |
+| `MASTER_SERVER` | — | Master address — used to self-register on startup (every 15 s) and to send mappings on graceful shutdown |
 | `LRU_CAPACITY` | `128` | Maximum number of keys this node holds in memory |
 
 ---
@@ -434,11 +515,9 @@ curl -X POST http://localhost:8080/data/bulk/get \
   -H "Content-Type: application/json" \
   -d '["a","b","c"]'
 
-# Add a new cache node at runtime
+# Add a new cache node at runtime — it self-registers automatically
 docker compose up -d aux4
-curl -X POST http://localhost:8080/nodes \
-  -H "Content-Type: application/json" \
-  -d '{"addr":"aux4:3004"}'
+# aux4 calls POST /nodes on the master within seconds of starting
 
 # Simulate a cache node crash and verify replica coverage
 docker kill distributed-cache-system-aux1-1
@@ -675,16 +754,12 @@ watch -n1 "curl -s $ENDPOINT/data/resilience-test"
 #### Locally (Docker Compose)
 
 ```bash
-# Start the fourth aux container
+# Start the fourth aux container — it self-registers with the master automatically
 docker compose up -d aux4
 
-# Register it with the master — it joins the hash ring immediately
-curl -X POST http://localhost:8080/nodes \
-  -H "Content-Type: application/json" \
-  -d '{"addr":"aux4:3004"}'
-
-# Master fetches mappings from ring neighbours and rebalances keys to aux4
-# Check the master logs to see the rebalance in progress
+# aux4 calls POST /nodes on the master within seconds of starting.
+# Master fetches mappings from ring neighbours and rebalances keys to aux4.
+# Check the master logs to see the rebalance in progress:
 docker logs distributed-cache-system-master-1 --follow | grep -i "rebalanc"
 ```
 
