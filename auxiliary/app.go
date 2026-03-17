@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -84,6 +86,33 @@ func Start() {
 	}()
 
 	log.Println("aux is listening on the port ", port)
+
+	// Self-register with the master periodically so it joins the hash ring without
+	// needing to be listed in AUX_SERVERS upfront, and recovers if the master restarts.
+	if masterAddr := os.Getenv("MASTER_SERVER"); masterAddr != "" && serverId != "" {
+		selfAddr := fmt.Sprintf("%s:%s", serverId, port)
+		go func() {
+			body, _ := json.Marshal(map[string]string{"addr": selfAddr})
+			for {
+				resp, err := http.Post(
+					fmt.Sprintf("http://%s/nodes", masterAddr),
+					"application/json",
+					bytes.NewBuffer(body),
+				)
+				if err == nil {
+					resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						log.Printf("registered with master at %s as %s", masterAddr, selfAddr)
+					} else {
+						log.Printf("master returned %d on registration", resp.StatusCode)
+					}
+				} else {
+					log.Printf("could not reach master at %s: %v", masterAddr, err)
+				}
+				time.Sleep(15 * time.Second)
+			}
+		}()
+	}
 
 	// Listen to termination signals
 	shutdown := make(chan os.Signal, 1)

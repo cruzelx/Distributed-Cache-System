@@ -756,7 +756,7 @@ func (m *Master) AddNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m.auxMu.Lock()
-	if _, exists := m.activeAuxServers[req.Addr]; exists {
+	if active, exists := m.activeAuxServers[req.Addr]; exists && active {
 		m.auxMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		return
