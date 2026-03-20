@@ -167,15 +167,21 @@ Write:  aux3 ← "hello"="world"    (primary)
 
 All replica writes fire in parallel goroutines. The master returns 200 as long as at least one write succeeds. If one replica is temporarily down, the write still lands on the other.
 
-**Read path** — primary-first with fallback:
+**Read path** — random replica selection with fallback:
 
-The master tries the primary node first. If it is unreachable or returns a non-200, it falls through to the secondary. The client sees a 200 either way.
+The master shuffles the replica list for each GET before trying nodes in order. This spreads reads evenly across all replicas so no single node becomes a bottleneck when one key receives disproportionately high traffic (a hot key). If the chosen replica is unreachable or returns a non-200, the master falls through to the next one. The client sees a 200 either way.
 
 ```
 GET "hello":
-  try aux3 → unreachable (node is down)
+  replicas shuffled → [aux1, aux3]
   try aux1 → 200 {"key":"hello","value":"world"}
+
+GET "hello" (next request):
+  replicas shuffled → [aux3, aux1]
+  try aux3 → 200 {"key":"hello","value":"world"}
 ```
+
+Bulk GETs apply the same logic per key: each key is independently assigned to a random replica when batching outbound requests to aux nodes.
 
 **Delete path** — remove from all replicas:
 
@@ -252,9 +258,13 @@ The primary pushes a `RingUpdate{action, aux}` event to the standby over `/ring-
 1. Client sends GET /data/x
 2. Nginx routes to either master (reads are load-balanced)
 3. Master calls GetNodes("x", replicationFactor) → [aux2, aux3]
-4. Master tries aux2 first:
-     GET aux2/data/x → 200 {"key":"x","value":"y"}
-5. Returns response to client immediately (aux3 never contacted)
+4. Master shuffles the replica list → e.g. [aux3, aux2]
+5. Master tries aux3 first:
+     GET aux3/data/x → 200 {"key":"x","value":"y"}
+6. Returns response to client immediately (aux2 not contacted this time)
+
+   On the next request for the same key the shuffle may produce [aux2, aux3],
+   so aux2 serves it — reads are spread across replicas over time.
 ```
 
 ### TTL expiry
@@ -852,6 +862,21 @@ locust -f locust.py --host http://localhost:8080 \
 | `ReadHeavyUser` | 70% | 4 GETs per PUT across a 500-key pool — simulates a typical cache consumer |
 | `WriteHeavyUser` | 20% | High write rate with unique keys + write-then-read consistency checks — simulates an ingestion pipeline |
 | `BulkUser` | 10% | Bulk PUT and bulk GET with batches of 10-50 keys — exercises the shard batch-locking path |
+| `HotKeyUser` | 10% | Hammers a single key (`hotkey:burn`) at high frequency to verify that replica-shuffle distributes hot key reads across all replicas rather than saturating one aux node |
+
+**Verifying hot key distribution:**
+
+After a run, query each aux node's Prometheus metrics to confirm reads were spread across the replicas for the hot key:
+
+```bash
+for port in 9001 9002 9003 9004; do
+  gets=$(curl -sf "http://localhost:$port/metrics" \
+    | awk '/^auxiliary_request_total\{method="GET"/ {sum += $2} END {print sum+0}')
+  echo "aux:$port  GETs = $gets"
+done
+```
+
+The two aux nodes that own the hot key's ring slot should show comparable GET counts. Nodes that don't own the slot will show significantly lower counts (they only serve other keys in the general pool).
 
 **Observed results on 3x t3.medium EKS nodes (ap-southeast-2), 100 concurrent users:**
 
