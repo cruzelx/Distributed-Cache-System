@@ -27,5 +27,5 @@ require (
 	github.com/prometheus/procfs v0.10.1 // indirect
 	github.com/stretchr/testify v1.8.4
 	golang.org/x/sys v0.26.0 // indirect
-	google.golang.org/protobuf v1.30.0 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 )
