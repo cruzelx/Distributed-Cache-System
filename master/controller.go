@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -188,7 +189,8 @@ func (m *Master) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try replicas in order; return on the first successful hit.
+	// Shuffle replicas so reads are spread across all replicas, not always hitting node[0].
+	rand.Shuffle(len(nodes), func(i, j int) { nodes[i], nodes[j] = nodes[j], nodes[i] })
 	for _, node := range nodes {
 		resp, err := m.client.Get(fmt.Sprintf("http://%s/data/%s", node, key))
 		if err != nil {
@@ -310,15 +312,16 @@ func (m *Master) BulkGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Group keys by primary node.
+	// Group keys by a randomly chosen replica so hot keys spread across replicas.
 	groups := make(map[string][]string)
 	for _, key := range keys {
-		nodes, err := m.hashring.GetNodes(key, 1)
+		nodes, err := m.hashring.GetNodes(key, m.replicationFactor)
 		if err != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		groups[nodes[0]] = append(groups[nodes[0]], key)
+		chosen := nodes[rand.Intn(len(nodes))]
+		groups[chosen] = append(groups[chosen], key)
 	}
 
 	type nodeResult struct {

@@ -185,3 +185,55 @@ class BulkUser(HttpUser):
     @task(1)
     def health(self):
         self.client.get("/health", name="/health")
+
+
+# ---------------------------------------------------------------------------
+# Hot key user — hammers a single key to verify read load is spread across
+# replicas rather than always hitting the same aux node.
+# ---------------------------------------------------------------------------
+HOT_KEY = "hotkey:burn"
+HOT_VALUE = "hot-key-test-value"
+
+
+class HotKeyUser(HttpUser):
+    weight = 10
+    wait_time = between(0.01, 0.05)
+
+    def on_start(self):
+        """Seed the hot key once when this user starts."""
+        self.client.post(
+            "/data",
+            json={"key": HOT_KEY, "value": HOT_VALUE},
+            name="/data PUT (hot-key seed)",
+        )
+
+    @task(10)
+    def read_hot_key(self):
+        """Hammer a single key — all reads resolve to the same hash-ring slot."""
+        with self.client.get(
+            f"/data/{HOT_KEY}",
+            name="/data/[hotkey] GET",
+            catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                body = resp.json()
+                if body.get("value") != HOT_VALUE:
+                    resp.failure(
+                        f"Hot key value mismatch: got {body.get('value')!r}"
+                    )
+                else:
+                    resp.success()
+            elif resp.status_code == 404:
+                # May happen briefly after eviction under memory pressure
+                resp.success()
+            else:
+                resp.failure(f"Unexpected status {resp.status_code}")
+
+    @task(1)
+    def refresh_hot_key(self):
+        """Periodically re-seed so the key survives LRU eviction."""
+        self.client.post(
+            "/data",
+            json={"key": HOT_KEY, "value": HOT_VALUE},
+            name="/data PUT (hot-key refresh)",
+        )
